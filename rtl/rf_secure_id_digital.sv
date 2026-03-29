@@ -8,6 +8,10 @@ module rf_secure_id_digital (
     output logic unresponsive
 );
 
+  logic rst_sync_ff1;
+  logic rst_sync_ff2;
+  logic rst_n_sync;
+
   logic         rx_packet_valid;
   logic [159:0] rx_packet_data;
 
@@ -31,11 +35,23 @@ module rf_secure_id_digital (
   logic id_hit_int;
   logic timeout_valid_int;
 
+  assign rst_n_sync      = rst_sync_ff2;
   assign cipher_valid_int = crc_valid_int && crc_ok_int;
+
+  // Synchronize reset release for all internal sequential logic.
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      rst_sync_ff1 <= 1'b0;
+      rst_sync_ff2 <= 1'b0;
+    end else begin
+      rst_sync_ff1 <= 1'b1;
+      rst_sync_ff2 <= rst_sync_ff1;
+    end
+  end
 
   packet_rx u_packet_rx (
       .clk         (clk),
-      .rst_n       (rst_n),
+      .rst_n       (rst_n_sync),
       .serial_bit  (serial_bit),
       .packet_valid(rx_packet_valid),
       .packet_data (rx_packet_data)
@@ -43,7 +59,7 @@ module rf_secure_id_digital (
 
   packet_parser u_packet_parser (
       .clk         (clk),
-      .rst_n       (rst_n),
+      .rst_n       (rst_n_sync),
       .packet_valid(rx_packet_valid),
       .packet_data (rx_packet_data),
       .parsed_valid(parsed_valid_int),
@@ -54,7 +70,7 @@ module rf_secure_id_digital (
 
   crc16_checker u_crc16_checker (
       .clk         (clk),
-      .rst_n       (rst_n),
+      .rst_n       (rst_n_sync),
       .parsed_valid(parsed_valid_int),
       .packet_type (packet_type_int),
       .ciphertext  (ciphertext_int),
@@ -66,7 +82,9 @@ module rf_secure_id_digital (
 
   aes_decrypt u_aes_decrypt (
       .clk            (clk),
-      .rst_n          (rst_n),
+      .rst_n          (rst_n_sync),
+      .key_valid      (1'b0),
+      .key_in         ('0),
       .cipher_valid   (cipher_valid_int),
       .ciphertext     (ciphertext_int),
       .plaintext_valid(plaintext_valid_int),
@@ -76,7 +94,7 @@ module rf_secure_id_digital (
 
   plaintext_validator u_plaintext_validator (
       .clk           (clk),
-      .rst_n         (rst_n),
+      .rst_n         (rst_n_sync),
       .plaintext_valid(plaintext_valid_int),
       .plaintext     (plaintext_int),
       .decrypt_valid (decrypt_valid_int),
@@ -86,7 +104,7 @@ module rf_secure_id_digital (
 
   cam u_cam (
       .clk         (clk),
-      .rst_n       (rst_n),
+      .rst_n       (rst_n_sync),
       .decrypt_valid(decrypt_valid_int),
       .decrypt_ok  (decrypt_ok_int),
       .id          (id_int),
@@ -98,7 +116,7 @@ module rf_secure_id_digital (
 
   timeout_monitor u_timeout_monitor (
       .clk         (clk),
-      .rst_n       (rst_n),
+      .rst_n       (rst_n_sync),
       .start       (cipher_valid_int),
       .done        (lookup_valid_int),
       .timeout_valid(timeout_valid_int)
@@ -106,7 +124,7 @@ module rf_secure_id_digital (
 
   classifier u_classifier (
       .clk           (clk),
-      .rst_n         (rst_n),
+      .rst_n         (rst_n_sync),
       .lookup_valid  (lookup_valid_int),
       .id_hit        (id_hit_int),
       .timeout_valid (timeout_valid_int),
@@ -115,5 +133,16 @@ module rf_secure_id_digital (
       .unauthorized  (unauthorized),
       .unresponsive  (unresponsive)
   );
+
+`ifndef SYNTHESIS
+`ifndef YOSYS
+  always_ff @(posedge clk) begin
+    if (rst_n_sync) begin
+      assert (!(lookup_valid_int && timeout_valid_int))
+        else $error("rf_secure_id_digital saw lookup_valid and timeout_valid together");
+    end
+  end
+`endif
+`endif
 
 endmodule

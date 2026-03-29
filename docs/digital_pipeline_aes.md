@@ -1,6 +1,6 @@
 # AES-Based Digital Pipeline
 
-This note freezes the next digital architecture baseline for `rf-secure-id-asic`.
+This note freezes the active digital architecture baseline for `rf-secure-id-asic`.
 
 ## Packet Format
 
@@ -43,6 +43,7 @@ serial_bit
 -> aes_decrypt
 -> plaintext_validator
 -> cam
+-> timeout_monitor
 -> classifier
 ```
 
@@ -61,7 +62,7 @@ serial_bit
 - output: `crc_valid`, `crc_ok`, `crc_calc[15:0]`
 
 `aes_decrypt`
-- input: `clk`, `rst_n`, `cipher_valid`, `ciphertext[127:0]`
+- input: `clk`, `rst_n`, `key_valid`, `key_in[127:0]`, `cipher_valid`, `ciphertext[127:0]`
 - output: `plaintext_valid`, `plaintext[127:0]`, `decrypt_busy`
 
 `plaintext_validator`
@@ -72,13 +73,17 @@ serial_bit
 - input: `clk`, `rst_n`, `decrypt_valid`, `decrypt_ok`, `id[15:0]`
 - output: `lookup_valid`, `id_hit`
 
+`timeout_monitor`
+- input: `clk`, `rst_n`, `start`, `done`
+- output: `timeout_valid`
+
 `classifier`
-- input: `clk`, `rst_n`, `lookup_valid`, `id_hit`
-- output: `classify_valid`, `authorized`, `unauthorized`
+- input: `clk`, `rst_n`, `lookup_valid`, `id_hit`, `timeout_valid`
+- output: `classify_valid`, `authorized`, `unauthorized`, `unresponsive`
 
 `rf_secure_id_digital`
 - input: `clk`, `rst_n`, `serial_bit`
-- output: `classify_valid`, `authorized`, `unauthorized`
+- output: `classify_valid`, `authorized`, `unauthorized`, `unresponsive`
 
 ## CRC16 Convention
 
@@ -102,10 +107,69 @@ CRC convention:
 
 ## Simplifying Assumptions
 
-- AES key is fixed in hardware.
+- The active integrated design is currently a fixed-key AES system.
+- The active top-level currently ties `aes_decrypt.key_valid = 0` and `key_in = 0`, so the default AES key is always used in the integrated design.
 - Only one AES block is decrypted per packet.
 - No AES mode of operation is used.
 - Only one decrypt operation is in flight at a time.
 - No replay protection is implemented yet.
 - No packet buffering or backpressure is implemented yet.
 - `decrypt_busy` is exposed for observability, but should not heavily drive system control in the first version.
+
+## AES Key Handling
+
+- Default key:
+  - `128'h000102030405060708090A0B0C0D0E0F`
+- `aes_decrypt` includes a synchronous key-loading interface:
+  - `key_valid`
+  - `key_in[127:0]`
+- In the active integrated top-level, this interface is reserved for future use and is tied inactive.
+- `key_reg` updates only when `decrypt_busy == 0`
+- Current limitation:
+  - if `key_reg` matches the default key, the decrypt core uses the pre-expanded default round keys
+  - if `key_reg` does not match the default key, the core still falls back to the default round keys
+  - runtime key expansion is future work
+
+## Design Constants
+
+The following are intentionally fixed in this implementation:
+- packet format
+- plaintext structure
+- AES round-key schedule for the default integrated key
+- built-in CAM contents
+
+These constants are fixed to keep the hardware small, deterministic, and aligned
+with the current fixed-function secure ID receiver use case.
+
+## Security Limitations
+
+- Fixed AES-128 key stored in hardware for the active integrated design
+- No replay protection
+- No authentication beyond CRC16 plus plaintext structure checks
+- No side-channel protections against power, EM, or timing analysis
+- Not hardened for adversarial deployment environments
+
+## Timeout Semantics
+
+- `timeout_monitor` starts its countdown when `cipher_valid` is asserted
+- `timeout_monitor` cancels the countdown when `lookup_valid` is asserted before expiry
+- if the countdown expires first, `timeout_valid` pulses for one cycle
+- `classifier` converts `timeout_valid` into:
+  - `classify_valid = 1`
+  - `authorized = 0`
+  - `unauthorized = 0`
+  - `unresponsive = 1`
+- `lookup_valid` has priority over `timeout_valid` if both ever coincide
+
+## Clocking and Timing Intent
+
+- Intended clock target: `50 MHz`
+- Intended serial data rate: `1 bit / cycle`
+- Expected dominant path: AES inverse round logic in `aes_decrypt`
+- Expected AES decrypt latency: `10 cycles`
+- Expected end-to-end authorized / unauthorized classification latency: approximately `16 cycles` from packet end in the current implementation
+- If timing closure fails later, the first expected improvement is AES datapath pipelining
+
+## Mixed-Signal Boundary
+
+The detailed analog/digital contract is documented in [`analog_digital_interface.md`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/docs/analog_digital_interface.md).

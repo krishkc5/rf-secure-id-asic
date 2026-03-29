@@ -1,3 +1,5 @@
+import random
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge, Timer
@@ -45,6 +47,7 @@ PLAIN_MAGIC = 0xC35A
 TEST_PACKET_TYPE = 0x01
 AUTHORIZED_ID = 0x1234
 UNAUTHORIZED_ID = 0x2222
+AUTHORIZED_IDS = (0x1234, 0x5678, 0x9ABC, 0xDEF0)
 
 AES_KAT_PLAINTEXT = 0x00112233445566778899AABBCCDDEEFF
 AES_KAT_CIPHERTEXT = 0x69C4E0D86A7B0430D8CDB78070B4C55A
@@ -55,7 +58,10 @@ DEFAULT_UNRESPONSIVE_LATENCY = DEFAULT_TIMEOUT_CYCLES + 4
 FORCED_TIMEOUT_CYCLES = 4
 FORCED_TIMEOUT_LATENCY = FORCED_TIMEOUT_CYCLES + 4
 NO_CLASSIFY_WINDOW = CLASSIFY_LATENCY + 1
+WRONG_PREAMBLE_NO_CLASSIFY_WINDOW = PACKET_WIDTH + CLASSIFY_LATENCY + 4
 BACK_TO_BACK_WINDOW = (2 * PACKET_WIDTH) + (2 * CLASSIFY_LATENCY) + 8
+RANDOM_STRESS_SEED = 0xC35A1234
+RANDOM_STRESS_PACKETS = 128
 
 
 def calc_crc16(packet_type: int, ciphertext: int) -> int:
@@ -257,6 +263,14 @@ def using_forced_timeout_top(dut) -> bool:
     return dut._name == "rf_secure_id_digital_timeout4"
 
 
+def random_unauthorized_id(rng: random.Random) -> int:
+    while True:
+        candidate = rng.randrange(0, 1 << 16)
+
+        if candidate not in AUTHORIZED_IDS:
+            return candidate
+
+
 async def apply_reset(dut) -> None:
     dut.rst_n.value = 0
     dut.serial_bit.value = 0
@@ -267,7 +281,11 @@ async def apply_reset(dut) -> None:
         await RisingEdge(dut.clk)
 
     dut.rst_n.value = 1
-    await RisingEdge(dut.clk)
+
+    # The active tops use a two-flop reset synchronizer, so wait for internal
+    # reset release before starting stimulus.
+    for _ in range(3):
+        await RisingEdge(dut.clk)
 
 
 @cocotb.test()
@@ -441,6 +459,115 @@ async def forced_timeout_short_threshold_produces_unresponsive(dut) -> None:
     )
 
 
+@cocotb.test()
+async def randomized_packet_stream_smoke(dut) -> None:
+    if using_forced_timeout_top(dut):
+        dut._log.info("Skipping default-path test on short-timeout wrapper.")
+        return
+
+    await setup_dut(dut)
+
+    rng = random.Random(RANDOM_STRESS_SEED)
+    dut._log.info(
+        f"Running randomized packet stream smoke test with seed 0x{RANDOM_STRESS_SEED:08x}"
+    )
+
+    for packet_idx in range(RANDOM_STRESS_PACKETS):
+        scenario = rng.choice(
+            (
+                "authorized",
+                "unauthorized",
+                "bad_crc",
+                "invalid_plaintext",
+                "wrong_preamble",
+            )
+        )
+        dut._log.info(f"Stress packet {packet_idx}: scenario={scenario}")
+
+        if scenario == "authorized":
+            plaintext_id = rng.choice(AUTHORIZED_IDS)
+            await send_packet(dut, TEST_PACKET_TYPE, plaintext_id, corrupt_crc=False)
+            await expect_classification(
+                dut,
+                expected_authorized=1,
+                expected_unauthorized=0,
+                expected_unresponsive=0,
+                expected_latency=CLASSIFY_LATENCY,
+            )
+        elif scenario == "unauthorized":
+            plaintext_id = random_unauthorized_id(rng)
+            await send_packet(dut, TEST_PACKET_TYPE, plaintext_id, corrupt_crc=False)
+            await expect_classification(
+                dut,
+                expected_authorized=0,
+                expected_unauthorized=1,
+                expected_unresponsive=0,
+                expected_latency=CLASSIFY_LATENCY,
+            )
+        elif scenario == "bad_crc":
+            plaintext_id = rng.choice(AUTHORIZED_IDS)
+            await send_packet(dut, TEST_PACKET_TYPE, plaintext_id, corrupt_crc=True)
+            await expect_no_classification(dut)
+        elif scenario == "invalid_plaintext":
+            plaintext_id = rng.choice(AUTHORIZED_IDS)
+
+            if rng.randrange(2) == 0:
+                wrong_magic = rng.randrange(0, 1 << 16)
+                while wrong_magic == PLAIN_MAGIC:
+                    wrong_magic = rng.randrange(0, 1 << 16)
+
+                invalid_plaintext = build_plaintext(
+                    plaintext_id,
+                    plain_magic=wrong_magic,
+                    reserved=0,
+                )
+            else:
+                invalid_reserved = rng.randrange(1, 1 << 96)
+                invalid_plaintext = build_plaintext(
+                    plaintext_id,
+                    plain_magic=PLAIN_MAGIC,
+                    reserved=invalid_reserved,
+                )
+
+            await send_packet(
+                dut,
+                TEST_PACKET_TYPE,
+                plaintext_id,
+                corrupt_crc=False,
+                plaintext_override=invalid_plaintext,
+            )
+            await expect_classification(
+                dut,
+                expected_authorized=0,
+                expected_unauthorized=0,
+                expected_unresponsive=1,
+                expected_latency=DEFAULT_UNRESPONSIVE_LATENCY,
+            )
+        else:
+            wrong_preamble = rng.randrange(0, 1 << 8)
+            while wrong_preamble == PREAMBLE:
+                wrong_preamble = rng.randrange(0, 1 << 8)
+
+            plaintext_id = rng.choice(AUTHORIZED_IDS)
+            plaintext = build_plaintext(plaintext_id)
+            ciphertext = aes128_encrypt_block(plaintext)
+            wrong_preamble_packet = build_packet(
+                TEST_PACKET_TYPE,
+                ciphertext,
+                corrupt_crc=False,
+                preamble=wrong_preamble,
+            )
+
+            await send_serial_bits(dut, wrong_preamble_packet, PACKET_WIDTH - 1, 0)
+            await expect_no_classification(
+                dut,
+                observation_cycles=WRONG_PREAMBLE_NO_CLASSIFY_WINDOW,
+            )
+
+        for _ in range(4):
+            await RisingEdge(dut.clk)
+
+
 async def expect_classification(
     dut,
     expected_authorized: int,
@@ -504,6 +631,8 @@ async def collect_classification_events(
     return events
 
 
-async def expect_no_classification(dut) -> None:
-    events = await collect_classification_events(dut, NO_CLASSIFY_WINDOW)
+async def expect_no_classification(
+    dut, observation_cycles: int = NO_CLASSIFY_WINDOW
+) -> None:
+    events = await collect_classification_events(dut, observation_cycles)
     assert events == [], f"unexpected classification events: {events}"

@@ -50,4 +50,28 @@ module timeout_monitor #(
     end
   end
 
+`ifndef SYNTHESIS
+`ifndef YOSYS
+  logic timeout_valid_prev_reg;
+
+  always_ff @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+      timeout_valid_prev_reg <= 1'b0;
+    end else begin
+      if (timeout_valid_prev_reg) begin
+        assert (!timeout_valid)
+          else $error("timeout_monitor timeout_valid must be a one-cycle pulse");
+      end
+
+      if (timeout_valid) begin
+        assert (!active_reg)
+          else $error("timeout_monitor active flag must clear once timeout fires");
+      end
+
+      timeout_valid_prev_reg <= timeout_valid;
+    end
+  end
+`endif
+`endif
+
 endmodule

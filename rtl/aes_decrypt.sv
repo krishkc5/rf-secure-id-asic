@@ -1,6 +1,8 @@
 module aes_decrypt (
     input  logic         clk,
     input  logic         rst_n,
+    input  logic         key_valid,
+    input  logic [127:0] key_in,
     input  logic         cipher_valid,
     input  logic [127:0] ciphertext,
     output logic         plaintext_valid,
@@ -11,17 +13,18 @@ module aes_decrypt (
   localparam int NUM_ROUNDS      = 10;
   localparam int ROUND_IDX_WIDTH = $clog2(NUM_ROUNDS + 1);
 
-  localparam logic [127:0] ROUND_KEY_0  = 128'h000102030405060708090A0B0C0D0E0F;
-  localparam logic [127:0] ROUND_KEY_1  = 128'hD6AA74FDD2AF72FADAA678F1D6AB76FE;
-  localparam logic [127:0] ROUND_KEY_2  = 128'hB692CF0B643DBDF1BE9BC5006830B3FE;
-  localparam logic [127:0] ROUND_KEY_3  = 128'hB6FF744ED2C2C9BF6C590CBF0469BF41;
-  localparam logic [127:0] ROUND_KEY_4  = 128'h47F7F7BC95353E03F96C32BCFD058DFD;
-  localparam logic [127:0] ROUND_KEY_5  = 128'h3CAAA3E8A99F9DEB50F3AF57ADF622AA;
-  localparam logic [127:0] ROUND_KEY_6  = 128'h5E390F7DF7A69296A7553DC10AA31F6B;
-  localparam logic [127:0] ROUND_KEY_7  = 128'h14F9701AE35FE28C440ADF4D4EA9C026;
-  localparam logic [127:0] ROUND_KEY_8  = 128'h47438735A41C65B9E016BAF4AEBF7AD2;
-  localparam logic [127:0] ROUND_KEY_9  = 128'h549932D1F08557681093ED9CBE2C974E;
-  localparam logic [127:0] ROUND_KEY_10 = 128'h13111D7FE3944A17F307A78B4D2B30C5;
+  localparam logic [127:0] DEFAULT_KEY          = 128'h000102030405060708090A0B0C0D0E0F;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_0  = 128'h000102030405060708090A0B0C0D0E0F;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_1  = 128'hD6AA74FDD2AF72FADAA678F1D6AB76FE;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_2  = 128'hB692CF0B643DBDF1BE9BC5006830B3FE;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_3  = 128'hB6FF744ED2C2C9BF6C590CBF0469BF41;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_4  = 128'h47F7F7BC95353E03F96C32BCFD058DFD;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_5  = 128'h3CAAA3E8A99F9DEB50F3AF57ADF622AA;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_6  = 128'h5E390F7DF7A69296A7553DC10AA31F6B;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_7  = 128'h14F9701AE35FE28C440ADF4D4EA9C026;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_8  = 128'h47438735A41C65B9E016BAF4AEBF7AD2;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_9  = 128'h549932D1F08557681093ED9CBE2C974E;
+  localparam logic [127:0] DEFAULT_ROUND_KEY_10 = 128'h13111D7FE3944A17F307A78B4D2B30C5;
 
   typedef enum logic {
     STATE_IDLE,
@@ -32,28 +35,42 @@ module aes_decrypt (
   controller_state_t        controller_state_next;
   logic [127:0]             state_reg;
   logic [127:0]             state_next;
+  logic [127:0]             key_reg;
+  logic [127:0]             key_next;
   logic [ROUND_IDX_WIDTH-1:0] round_idx_reg;
   logic [ROUND_IDX_WIDTH-1:0] round_idx_next;
   logic                     plaintext_valid_next;
   logic [127:0]             plaintext_next;
   logic                     decrypt_busy_next;
 
-  function automatic logic [127:0] get_round_key(input logic [3:0] idx);
+  function automatic logic [127:0] get_default_round_key(input logic [3:0] idx);
     begin
       unique case (idx)
-        4'd0:    get_round_key = ROUND_KEY_0;
-        4'd1:    get_round_key = ROUND_KEY_1;
-        4'd2:    get_round_key = ROUND_KEY_2;
-        4'd3:    get_round_key = ROUND_KEY_3;
-        4'd4:    get_round_key = ROUND_KEY_4;
-        4'd5:    get_round_key = ROUND_KEY_5;
-        4'd6:    get_round_key = ROUND_KEY_6;
-        4'd7:    get_round_key = ROUND_KEY_7;
-        4'd8:    get_round_key = ROUND_KEY_8;
-        4'd9:    get_round_key = ROUND_KEY_9;
-        4'd10:   get_round_key = ROUND_KEY_10;
-        default: get_round_key = '0;
+        4'd0:    get_default_round_key = DEFAULT_ROUND_KEY_0;
+        4'd1:    get_default_round_key = DEFAULT_ROUND_KEY_1;
+        4'd2:    get_default_round_key = DEFAULT_ROUND_KEY_2;
+        4'd3:    get_default_round_key = DEFAULT_ROUND_KEY_3;
+        4'd4:    get_default_round_key = DEFAULT_ROUND_KEY_4;
+        4'd5:    get_default_round_key = DEFAULT_ROUND_KEY_5;
+        4'd6:    get_default_round_key = DEFAULT_ROUND_KEY_6;
+        4'd7:    get_default_round_key = DEFAULT_ROUND_KEY_7;
+        4'd8:    get_default_round_key = DEFAULT_ROUND_KEY_8;
+        4'd9:    get_default_round_key = DEFAULT_ROUND_KEY_9;
+        4'd10:   get_default_round_key = DEFAULT_ROUND_KEY_10;
+        default: get_default_round_key = '0;
       endcase
+    end
+  endfunction
+
+  function automatic logic [127:0] get_active_round_key(input logic [3:0] idx);
+    begin
+      if (key_reg == DEFAULT_KEY) begin
+        get_active_round_key = get_default_round_key(idx);
+      end else begin
+        // Runtime round-key expansion is future work. Non-default keys
+        // currently fall back to the default pre-expanded schedule.
+        get_active_round_key = get_default_round_key(idx);
+      end
     end
   endfunction
 
@@ -516,17 +533,22 @@ module aes_decrypt (
   always_comb begin
     controller_state_next = controller_state_reg;
     state_next            = state_reg;
+    key_next              = key_reg;
     round_idx_next        = round_idx_reg;
     plaintext_valid_next  = 1'b0;
     plaintext_next        = plaintext;
     decrypt_busy_next     = decrypt_busy;
+
+    if (key_valid && !decrypt_busy) begin
+      key_next = key_in;
+    end
 
     unique case (controller_state_reg)
       STATE_IDLE: begin
         decrypt_busy_next = 1'b0;
 
         if (cipher_valid) begin
-          state_next            = add_round_key(ciphertext, get_round_key(4'd10));
+          state_next            = add_round_key(ciphertext, get_active_round_key(4'd10));
           round_idx_next        = ROUND_IDX_WIDTH'(NUM_ROUNDS - 1);
           decrypt_busy_next     = 1'b1;
           controller_state_next = STATE_RUN;
@@ -537,10 +559,10 @@ module aes_decrypt (
         decrypt_busy_next = 1'b1;
 
         if (round_idx_reg > 0) begin
-          state_next     = inv_round(state_reg, get_round_key(round_idx_reg));
+          state_next     = inv_round(state_reg, get_active_round_key(round_idx_reg));
           round_idx_next = round_idx_reg - 1'b1;
         end else begin
-          plaintext_next        = inv_final_round(state_reg, get_round_key(4'd0));
+          plaintext_next        = inv_final_round(state_reg, get_active_round_key(4'd0));
           plaintext_valid_next  = 1'b1;
           decrypt_busy_next     = 1'b0;
           controller_state_next = STATE_IDLE;
@@ -562,6 +584,7 @@ module aes_decrypt (
     if (!rst_n) begin
       controller_state_reg <= STATE_IDLE;
       state_reg            <= '0;
+      key_reg              <= DEFAULT_KEY;
       round_idx_reg        <= '0;
       plaintext_valid      <= 1'b0;
       plaintext            <= '0;
@@ -569,11 +592,23 @@ module aes_decrypt (
     end else begin
       controller_state_reg <= controller_state_next;
       state_reg            <= state_next;
+      key_reg              <= key_next;
       round_idx_reg        <= round_idx_next;
       plaintext_valid      <= plaintext_valid_next;
       plaintext            <= plaintext_next;
       decrypt_busy         <= decrypt_busy_next;
     end
   end
+
+`ifndef SYNTHESIS
+`ifndef YOSYS
+  always_ff @(posedge clk) begin
+    if (rst_n && decrypt_busy) begin
+      assert (!cipher_valid)
+        else $error("aes_decrypt received cipher_valid while decrypt_busy was high");
+    end
+  end
+`endif
+`endif
 
 endmodule

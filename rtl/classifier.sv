@@ -48,4 +48,27 @@ module classifier (
     end
   end
 
+`ifndef SYNTHESIS
+`ifndef YOSYS
+  always_ff @(posedge clk) begin
+    if (rst_n) begin
+      assert (!(authorized && unauthorized))
+        else $error("classifier drove authorized and unauthorized together");
+      assert (!(authorized && unresponsive))
+        else $error("classifier drove authorized and unresponsive together");
+      assert (!(unauthorized && unresponsive))
+        else $error("classifier drove unauthorized and unresponsive together");
+
+      if (classify_valid) begin
+        assert ((authorized || unauthorized || unresponsive) &&
+                !(authorized && unauthorized) &&
+                !(authorized && unresponsive) &&
+                !(unauthorized && unresponsive))
+          else $error("classifier classify_valid did not map to exactly one class");
+      end
+    end
+  end
+`endif
+`endif
+
 endmodule
