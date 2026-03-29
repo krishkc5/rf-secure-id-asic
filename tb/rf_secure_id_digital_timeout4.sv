@@ -91,7 +91,9 @@ module rf_secure_id_digital_timeout4 (
       .decrypt_ok  (decrypt_ok_int),
       .id          (id_int),
       .lookup_valid(lookup_valid_int),
-      .id_hit      (id_hit_int)
+      .id_hit      (id_hit_int),
+      .match_index (),
+      .multi_hit   ()
   );
 
   timeout_monitor #(

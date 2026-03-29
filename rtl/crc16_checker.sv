@@ -34,7 +34,7 @@ module crc16_checker (
         end
       end
 
-      return crc;
+      calc_crc16 = crc;
     end
   endfunction
 
