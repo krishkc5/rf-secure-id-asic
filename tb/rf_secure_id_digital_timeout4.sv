@@ -1,4 +1,4 @@
-module rf_secure_id_digital (
+module rf_secure_id_digital_timeout4 (
     input  logic clk,
     input  logic rst_n,
     input  logic serial_bit,
@@ -16,9 +16,9 @@ module rf_secure_id_digital (
   logic [127:0] ciphertext_int;
   logic [15:0]  crc_rx_int;
 
-  logic        crc_valid_int;
-  logic        crc_ok_int;
-  logic        cipher_valid_int;
+  logic         crc_valid_int;
+  logic         crc_ok_int;
+  logic         cipher_valid_int;
 
   logic         plaintext_valid_int;
   logic [127:0] plaintext_int;
@@ -94,7 +94,9 @@ module rf_secure_id_digital (
       .id_hit      (id_hit_int)
   );
 
-  timeout_monitor u_timeout_monitor (
+  timeout_monitor #(
+      .TIMEOUT_CYCLES(4)
+  ) u_timeout_monitor (
       .clk         (clk),
       .rst_n       (rst_n),
       .start       (cipher_valid_int),

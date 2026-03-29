@@ -50,8 +50,12 @@ AES_KAT_PLAINTEXT = 0x00112233445566778899AABBCCDDEEFF
 AES_KAT_CIPHERTEXT = 0x69C4E0D86A7B0430D8CDB78070B4C55A
 
 CLASSIFY_LATENCY = 16
+DEFAULT_TIMEOUT_CYCLES = 32
+DEFAULT_UNRESPONSIVE_LATENCY = DEFAULT_TIMEOUT_CYCLES + 4
+FORCED_TIMEOUT_CYCLES = 4
+FORCED_TIMEOUT_LATENCY = FORCED_TIMEOUT_CYCLES + 4
 NO_CLASSIFY_WINDOW = CLASSIFY_LATENCY + 1
-BACK_TO_BACK_WINDOW = (2 * PACKET_WIDTH) + CLASSIFY_LATENCY + 4
+BACK_TO_BACK_WINDOW = (2 * PACKET_WIDTH) + (2 * CLASSIFY_LATENCY) + 8
 
 
 def calc_crc16(packet_type: int, ciphertext: int) -> int:
@@ -246,6 +250,11 @@ async def setup_dut(dut) -> None:
     assert int(dut.classify_valid.value) == 0
     assert int(dut.authorized.value) == 0
     assert int(dut.unauthorized.value) == 0
+    assert int(dut.unresponsive.value) == 0
+
+
+def using_forced_timeout_top(dut) -> bool:
+    return dut._name == "rf_secure_id_digital_timeout4"
 
 
 async def apply_reset(dut) -> None:
@@ -263,20 +272,44 @@ async def apply_reset(dut) -> None:
 
 @cocotb.test()
 async def authorized_packet_with_correct_crc(dut) -> None:
+    if using_forced_timeout_top(dut):
+        dut._log.info("Skipping default-path test on short-timeout wrapper.")
+        return
+
     await setup_dut(dut)
     await send_packet(dut, TEST_PACKET_TYPE, AUTHORIZED_ID, corrupt_crc=False)
-    await expect_classification(dut, expected_authorized=1, expected_unauthorized=0)
+    await expect_classification(
+        dut,
+        expected_authorized=1,
+        expected_unauthorized=0,
+        expected_unresponsive=0,
+        expected_latency=CLASSIFY_LATENCY,
+    )
 
 
 @cocotb.test()
 async def unauthorized_packet_with_correct_crc(dut) -> None:
+    if using_forced_timeout_top(dut):
+        dut._log.info("Skipping default-path test on short-timeout wrapper.")
+        return
+
     await setup_dut(dut)
     await send_packet(dut, TEST_PACKET_TYPE, UNAUTHORIZED_ID, corrupt_crc=False)
-    await expect_classification(dut, expected_authorized=0, expected_unauthorized=1)
+    await expect_classification(
+        dut,
+        expected_authorized=0,
+        expected_unauthorized=1,
+        expected_unresponsive=0,
+        expected_latency=CLASSIFY_LATENCY,
+    )
 
 
 @cocotb.test()
 async def packet_with_bad_crc(dut) -> None:
+    if using_forced_timeout_top(dut):
+        dut._log.info("Skipping default-path test on short-timeout wrapper.")
+        return
+
     await setup_dut(dut)
     await send_packet(dut, TEST_PACKET_TYPE, AUTHORIZED_ID, corrupt_crc=True)
     await expect_no_classification(dut)
@@ -284,6 +317,10 @@ async def packet_with_bad_crc(dut) -> None:
 
 @cocotb.test()
 async def wrong_preamble_produces_no_classification(dut) -> None:
+    if using_forced_timeout_top(dut):
+        dut._log.info("Skipping default-path test on short-timeout wrapper.")
+        return
+
     await setup_dut(dut)
 
     monitor = cocotb.start_soon(
@@ -299,6 +336,10 @@ async def wrong_preamble_produces_no_classification(dut) -> None:
 
 @cocotb.test()
 async def back_to_back_valid_packets_classify_in_order(dut) -> None:
+    if using_forced_timeout_top(dut):
+        dut._log.info("Skipping default-path test on short-timeout wrapper.")
+        return
+
     await setup_dut(dut)
 
     monitor = cocotb.start_soon(collect_classification_events(dut, BACK_TO_BACK_WINDOW))
@@ -319,13 +360,17 @@ async def back_to_back_valid_packets_classify_in_order(dut) -> None:
     events = await monitor
 
     assert len(events) == 2, f"expected 2 classification events, saw {events}"
-    assert events[0][1:] == (1, 0), f"first classification wrong: {events[0]}"
-    assert events[1][1:] == (0, 1), f"second classification wrong: {events[1]}"
+    assert events[0][1:] == (1, 0, 0), f"first classification wrong: {events[0]}"
+    assert events[1][1:] == (0, 1, 0), f"second classification wrong: {events[1]}"
     assert events[0][0] < events[1][0], f"classifications out of order: {events}"
 
 
 @cocotb.test()
 async def reset_mid_packet_reception_prevents_classification(dut) -> None:
+    if using_forced_timeout_top(dut):
+        dut._log.info("Skipping default-path test on short-timeout wrapper.")
+        return
+
     await setup_dut(dut)
 
     plaintext = build_plaintext(AUTHORIZED_ID)
@@ -355,7 +400,11 @@ async def reset_mid_packet_reception_prevents_classification(dut) -> None:
 
 
 @cocotb.test()
-async def structurally_invalid_plaintext_produces_no_classification(dut) -> None:
+async def structurally_invalid_plaintext_produces_unresponsive(dut) -> None:
+    if using_forced_timeout_top(dut):
+        dut._log.info("Skipping default-path test on short-timeout wrapper.")
+        return
+
     await setup_dut(dut)
 
     invalid_plaintext = build_plaintext(AUTHORIZED_ID, plain_magic=0x0000, reserved=0)
@@ -366,24 +415,58 @@ async def structurally_invalid_plaintext_produces_no_classification(dut) -> None
         corrupt_crc=False,
         plaintext_override=invalid_plaintext,
     )
-    await expect_no_classification(dut)
+    await expect_classification(
+        dut,
+        expected_authorized=0,
+        expected_unauthorized=0,
+        expected_unresponsive=1,
+        expected_latency=DEFAULT_UNRESPONSIVE_LATENCY,
+    )
+
+
+@cocotb.test()
+async def forced_timeout_short_threshold_produces_unresponsive(dut) -> None:
+    if not using_forced_timeout_top(dut):
+        dut._log.info("Skipping short-timeout-only test on default top.")
+        return
+
+    await setup_dut(dut)
+    await send_packet(dut, TEST_PACKET_TYPE, AUTHORIZED_ID, corrupt_crc=False)
+    await expect_classification(
+        dut,
+        expected_authorized=0,
+        expected_unauthorized=0,
+        expected_unresponsive=1,
+        expected_latency=FORCED_TIMEOUT_LATENCY,
+    )
 
 
 async def expect_classification(
-    dut, expected_authorized: int, expected_unauthorized: int
+    dut,
+    expected_authorized: int,
+    expected_unauthorized: int,
+    expected_unresponsive: int,
+    expected_latency: int,
 ) -> None:
     saw_classify = False
 
-    for cycle_idx in range(1, CLASSIFY_LATENCY + 1):
+    for cycle_idx in range(1, expected_latency + 1):
         await RisingEdge(dut.clk)
         await ReadOnly()
 
         if int(dut.classify_valid.value):
             assert (
-                cycle_idx == CLASSIFY_LATENCY
-            ), f"classify_valid arrived at cycle {cycle_idx}, expected {CLASSIFY_LATENCY}"
+                cycle_idx == expected_latency
+            ), f"classify_valid arrived at cycle {cycle_idx}, expected {expected_latency}"
             assert int(dut.authorized.value) == expected_authorized
             assert int(dut.unauthorized.value) == expected_unauthorized
+            assert int(dut.unresponsive.value) == expected_unresponsive
+            assert (
+                expected_authorized
+                + expected_unauthorized
+                + expected_unresponsive
+                == 1
+            ), "expected outputs must be mutually exclusive"
             saw_classify = True
 
     assert saw_classify, "classify_valid did not pulse in the expected latency window"
@@ -393,7 +476,9 @@ async def expect_classification(
     assert int(dut.classify_valid.value) == 0
 
 
-async def collect_classification_events(dut, observation_cycles: int) -> list[tuple[int, int, int]]:
+async def collect_classification_events(
+    dut, observation_cycles: int
+) -> list[tuple[int, int, int, int]]:
     events = []
 
     for cycle_idx in range(1, observation_cycles + 1):
@@ -401,11 +486,18 @@ async def collect_classification_events(dut, observation_cycles: int) -> list[tu
         await ReadOnly()
 
         if int(dut.classify_valid.value):
+            outputs = (
+                int(dut.authorized.value),
+                int(dut.unauthorized.value),
+                int(dut.unresponsive.value),
+            )
+            assert sum(outputs) == 1, f"outputs not mutually exclusive: {outputs}"
             events.append(
                 (
                     cycle_idx,
-                    int(dut.authorized.value),
-                    int(dut.unauthorized.value),
+                    outputs[0],
+                    outputs[1],
+                    outputs[2],
                 )
             )
 
