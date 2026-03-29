@@ -61,7 +61,109 @@ NO_CLASSIFY_WINDOW = CLASSIFY_LATENCY + 1
 WRONG_PREAMBLE_NO_CLASSIFY_WINDOW = PACKET_WIDTH + CLASSIFY_LATENCY + 4
 BACK_TO_BACK_WINDOW = (2 * PACKET_WIDTH) + (2 * CLASSIFY_LATENCY) + 8
 RANDOM_STRESS_SEED = 0xC35A1234
-RANDOM_STRESS_PACKETS = 128
+RANDOM_STRESS_PACKETS = 512
+
+REQUIRED_COVERAGE_FLAGS = (
+    "authorized_classification_observed",
+    "unauthorized_classification_observed",
+    "unresponsive_classification_observed",
+    "bad_crc_case_exercised",
+    "wrong_preamble_case_exercised",
+    "invalid_plaintext_case_exercised",
+    "reset_mid_packet_case_exercised",
+    "back_to_back_packet_case_exercised",
+)
+
+COVERAGE_FLAGS = {flag: False for flag in REQUIRED_COVERAGE_FLAGS}
+
+
+def mark_coverage(flag: str) -> None:
+    COVERAGE_FLAGS[flag] = True
+
+
+def missing_coverage_flags() -> list[str]:
+    return [flag for flag, seen in COVERAGE_FLAGS.items() if not seen]
+
+
+def coverage_summary() -> str:
+    return ", ".join(
+        f"{flag}={'Y' if COVERAGE_FLAGS[flag] else 'N'}"
+        for flag in REQUIRED_COVERAGE_FLAGS
+    )
+
+
+def expected_outcome_for_scenario(
+    scenario: str,
+) -> tuple[tuple[int, int, int] | None, int]:
+    if scenario == "authorized":
+        return (1, 0, 0), CLASSIFY_LATENCY
+    if scenario == "unauthorized":
+        return (0, 1, 0), CLASSIFY_LATENCY
+    if scenario == "invalid_plaintext":
+        return (0, 0, 1), DEFAULT_UNRESPONSIVE_LATENCY
+    if scenario == "wrong_preamble":
+        return None, WRONG_PREAMBLE_NO_CLASSIFY_WINDOW
+
+    return None, NO_CLASSIFY_WINDOW
+
+
+def mark_scenario_coverage(scenario: str) -> None:
+    if scenario == "bad_crc":
+        mark_coverage("bad_crc_case_exercised")
+    elif scenario == "wrong_preamble":
+        mark_coverage("wrong_preamble_case_exercised")
+    elif scenario == "invalid_plaintext":
+        mark_coverage("invalid_plaintext_case_exercised")
+
+
+class ProtocolMonitor:
+    def __init__(self, dut):
+        self.dut = dut
+        self.cycle = 0
+        self.prev_classify_valid = 0
+        self.events: list[tuple[int, int, int, int]] = []
+        self.task = cocotb.start_soon(self._run())
+
+    async def _run(self) -> None:
+        while True:
+            await RisingEdge(self.dut.clk)
+            await ReadOnly()
+
+            self.cycle += 1
+
+            classify_valid = int(self.dut.classify_valid.value)
+            outputs = (
+                int(self.dut.authorized.value),
+                int(self.dut.unauthorized.value),
+                int(self.dut.unresponsive.value),
+            )
+
+            assert sum(outputs) <= 1, f"outputs not mutually exclusive: {outputs}"
+
+            if classify_valid:
+                assert (
+                    sum(outputs) == 1
+                ), f"classify_valid asserted without exactly one output high: {outputs}"
+                assert (
+                    not self.prev_classify_valid
+                ), "classify_valid must be a one-cycle pulse"
+
+                self.events.append((self.cycle, outputs[0], outputs[1], outputs[2]))
+
+                if outputs == (1, 0, 0):
+                    mark_coverage("authorized_classification_observed")
+                elif outputs == (0, 1, 0):
+                    mark_coverage("unauthorized_classification_observed")
+                elif outputs == (0, 0, 1):
+                    mark_coverage("unresponsive_classification_observed")
+
+            self.prev_classify_valid = classify_valid
+
+    def snapshot(self) -> int:
+        return len(self.events)
+
+    def new_events(self, start_idx: int) -> list[tuple[int, int, int, int]]:
+        return self.events[start_idx:]
 
 
 def calc_crc16(packet_type: int, ciphertext: int) -> int:
@@ -250,6 +352,7 @@ async def send_packet(
 async def setup_dut(dut) -> None:
     verify_aes_helper()
     cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    dut._protocol_monitor = ProtocolMonitor(dut)
     await apply_reset(dut)
     await ReadOnly()
 
@@ -329,6 +432,7 @@ async def packet_with_bad_crc(dut) -> None:
         return
 
     await setup_dut(dut)
+    mark_coverage("bad_crc_case_exercised")
     await send_packet(dut, TEST_PACKET_TYPE, AUTHORIZED_ID, corrupt_crc=True)
     await expect_no_classification(dut)
 
@@ -340,6 +444,7 @@ async def wrong_preamble_produces_no_classification(dut) -> None:
         return
 
     await setup_dut(dut)
+    mark_coverage("wrong_preamble_case_exercised")
 
     monitor = cocotb.start_soon(
         collect_classification_events(dut, PACKET_WIDTH + CLASSIFY_LATENCY + 4)
@@ -359,6 +464,7 @@ async def back_to_back_valid_packets_classify_in_order(dut) -> None:
         return
 
     await setup_dut(dut)
+    mark_coverage("back_to_back_packet_case_exercised")
 
     monitor = cocotb.start_soon(collect_classification_events(dut, BACK_TO_BACK_WINDOW))
 
@@ -390,6 +496,7 @@ async def reset_mid_packet_reception_prevents_classification(dut) -> None:
         return
 
     await setup_dut(dut)
+    mark_coverage("reset_mid_packet_case_exercised")
 
     plaintext = build_plaintext(AUTHORIZED_ID)
     ciphertext = aes128_encrypt_block(plaintext)
@@ -424,6 +531,7 @@ async def structurally_invalid_plaintext_produces_unresponsive(dut) -> None:
         return
 
     await setup_dut(dut)
+    mark_coverage("invalid_plaintext_case_exercised")
 
     invalid_plaintext = build_plaintext(AUTHORIZED_ID, plain_magic=0x0000, reserved=0)
     await send_packet(
@@ -469,7 +577,8 @@ async def randomized_packet_stream_smoke(dut) -> None:
 
     rng = random.Random(RANDOM_STRESS_SEED)
     dut._log.info(
-        f"Running randomized packet stream smoke test with seed 0x{RANDOM_STRESS_SEED:08x}"
+        f"Running randomized packet stream test with {RANDOM_STRESS_PACKETS} packets "
+        f"and seed 0x{RANDOM_STRESS_SEED:08x}"
     )
 
     for packet_idx in range(RANDOM_STRESS_PACKETS):
@@ -483,31 +592,33 @@ async def randomized_packet_stream_smoke(dut) -> None:
             )
         )
         dut._log.info(f"Stress packet {packet_idx}: scenario={scenario}")
+        mark_scenario_coverage(scenario)
+        expected_outcome, expected_latency = expected_outcome_for_scenario(scenario)
 
         if scenario == "authorized":
             plaintext_id = rng.choice(AUTHORIZED_IDS)
             await send_packet(dut, TEST_PACKET_TYPE, plaintext_id, corrupt_crc=False)
             await expect_classification(
                 dut,
-                expected_authorized=1,
-                expected_unauthorized=0,
-                expected_unresponsive=0,
-                expected_latency=CLASSIFY_LATENCY,
+                expected_authorized=expected_outcome[0],
+                expected_unauthorized=expected_outcome[1],
+                expected_unresponsive=expected_outcome[2],
+                expected_latency=expected_latency,
             )
         elif scenario == "unauthorized":
             plaintext_id = random_unauthorized_id(rng)
             await send_packet(dut, TEST_PACKET_TYPE, plaintext_id, corrupt_crc=False)
             await expect_classification(
                 dut,
-                expected_authorized=0,
-                expected_unauthorized=1,
-                expected_unresponsive=0,
-                expected_latency=CLASSIFY_LATENCY,
+                expected_authorized=expected_outcome[0],
+                expected_unauthorized=expected_outcome[1],
+                expected_unresponsive=expected_outcome[2],
+                expected_latency=expected_latency,
             )
         elif scenario == "bad_crc":
             plaintext_id = rng.choice(AUTHORIZED_IDS)
             await send_packet(dut, TEST_PACKET_TYPE, plaintext_id, corrupt_crc=True)
-            await expect_no_classification(dut)
+            await expect_no_classification(dut, observation_cycles=expected_latency)
         elif scenario == "invalid_plaintext":
             plaintext_id = rng.choice(AUTHORIZED_IDS)
 
@@ -538,10 +649,10 @@ async def randomized_packet_stream_smoke(dut) -> None:
             )
             await expect_classification(
                 dut,
-                expected_authorized=0,
-                expected_unauthorized=0,
-                expected_unresponsive=1,
-                expected_latency=DEFAULT_UNRESPONSIVE_LATENCY,
+                expected_authorized=expected_outcome[0],
+                expected_unauthorized=expected_outcome[1],
+                expected_unresponsive=expected_outcome[2],
+                expected_latency=expected_latency,
             )
         else:
             wrong_preamble = rng.randrange(0, 1 << 8)
@@ -559,13 +670,21 @@ async def randomized_packet_stream_smoke(dut) -> None:
             )
 
             await send_serial_bits(dut, wrong_preamble_packet, PACKET_WIDTH - 1, 0)
-            await expect_no_classification(
-                dut,
-                observation_cycles=WRONG_PREAMBLE_NO_CLASSIFY_WINDOW,
-            )
+            await expect_no_classification(dut, observation_cycles=expected_latency)
 
         for _ in range(4):
             await RisingEdge(dut.clk)
+
+
+@cocotb.test()
+async def verification_closure_summary(dut) -> None:
+    if using_forced_timeout_top(dut):
+        dut._log.info("Skipping default-path coverage closure test on short-timeout wrapper.")
+        return
+
+    missing_flags = missing_coverage_flags()
+    dut._log.info(f"Coverage summary: {coverage_summary()}")
+    assert not missing_flags, f"missing required coverage flags: {missing_flags}"
 
 
 async def expect_classification(
@@ -575,60 +694,47 @@ async def expect_classification(
     expected_unresponsive: int,
     expected_latency: int,
 ) -> None:
-    saw_classify = False
+    monitor = dut._protocol_monitor
+    start_idx = monitor.snapshot()
+    start_cycle = monitor.cycle
 
-    for cycle_idx in range(1, expected_latency + 1):
+    for _ in range(expected_latency):
         await RisingEdge(dut.clk)
         await ReadOnly()
 
-        if int(dut.classify_valid.value):
-            assert (
-                cycle_idx == expected_latency
-            ), f"classify_valid arrived at cycle {cycle_idx}, expected {expected_latency}"
-            assert int(dut.authorized.value) == expected_authorized
-            assert int(dut.unauthorized.value) == expected_unauthorized
-            assert int(dut.unresponsive.value) == expected_unresponsive
-            assert (
-                expected_authorized
-                + expected_unauthorized
-                + expected_unresponsive
-                == 1
-            ), "expected outputs must be mutually exclusive"
-            saw_classify = True
+    expected_events = monitor.new_events(start_idx)
+    assert (
+        len(expected_events) == 1
+    ), f"expected exactly one classification event, saw {expected_events}"
 
-    assert saw_classify, "classify_valid did not pulse in the expected latency window"
+    event_cycle, authorized, unauthorized, unresponsive = expected_events[0]
+    assert (
+        event_cycle == start_cycle + expected_latency
+    ), f"classification arrived at cycle {event_cycle - start_cycle}, expected {expected_latency}"
+    assert authorized == expected_authorized
+    assert unauthorized == expected_unauthorized
+    assert unresponsive == expected_unresponsive
+    assert (
+        expected_authorized + expected_unauthorized + expected_unresponsive == 1
+    ), "expected outputs must be mutually exclusive"
 
     await RisingEdge(dut.clk)
     await ReadOnly()
     assert int(dut.classify_valid.value) == 0
+    assert len(monitor.new_events(start_idx)) == 1, "duplicate classification emitted"
 
 
 async def collect_classification_events(
     dut, observation_cycles: int
 ) -> list[tuple[int, int, int, int]]:
-    events = []
+    monitor = dut._protocol_monitor
+    start_idx = monitor.snapshot()
 
-    for cycle_idx in range(1, observation_cycles + 1):
+    for _ in range(observation_cycles):
         await RisingEdge(dut.clk)
         await ReadOnly()
 
-        if int(dut.classify_valid.value):
-            outputs = (
-                int(dut.authorized.value),
-                int(dut.unauthorized.value),
-                int(dut.unresponsive.value),
-            )
-            assert sum(outputs) == 1, f"outputs not mutually exclusive: {outputs}"
-            events.append(
-                (
-                    cycle_idx,
-                    outputs[0],
-                    outputs[1],
-                    outputs[2],
-                )
-            )
-
-    return events
+    return monitor.new_events(start_idx)
 
 
 async def expect_no_classification(

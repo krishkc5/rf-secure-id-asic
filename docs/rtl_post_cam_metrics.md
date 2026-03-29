@@ -191,3 +191,48 @@ All current Yosys warnings are therefore reviewed and treated as benign frontend
 - The reset synchronizer adds only a very small amount of top-level logic.
 - Area and logic complexity are still dominated by [`aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/aes_decrypt.sv).
 - The stronger randomized regression improves confidence in packet sequencing, negative cases, and output exclusivity without changing RTL behavior.
+
+## Verification Closure Update
+
+- Directed cocotb coverage now explicitly includes:
+  - authorized classification
+  - unauthorized classification
+  - unresponsive classification
+  - bad CRC rejection
+  - wrong preamble rejection
+  - invalid plaintext rejection
+  - reset during packet reception
+  - back-to-back valid packets
+- The randomized cocotb campaign now runs `512` packets with deterministic seed `0xC35A1234`.
+- The randomized stream mixes:
+  - valid authorized packets
+  - valid unauthorized packets
+  - bad CRC packets
+  - invalid plaintext packets
+  - wrong-preamble / malformed traffic
+- The randomized test uses a Python-side expected-outcome model and checks the observed classification against that expected result for every packet.
+- An always-on cocotb protocol monitor now checks throughout regression:
+  - `authorized`, `unauthorized`, and `unresponsive` stay mutually exclusive
+  - `classify_valid` is a one-cycle pulse
+  - classification events are not duplicated within a single expected response window
+  - invalid scenarios do not emit unexpected classifications in their observation windows
+- The regression also includes an explicit coverage-closure test that requires these flags:
+  - `authorized_classification_observed`
+  - `unauthorized_classification_observed`
+  - `unresponsive_classification_observed`
+  - `bad_crc_case_exercised`
+  - `wrong_preamble_case_exercised`
+  - `invalid_plaintext_case_exercised`
+  - `reset_mid_packet_case_exercised`
+  - `back_to_back_packet_case_exercised`
+
+- Active regression command:
+  - `uv run --python .venv/bin/python -m pytest -s tb/test_rf_secure_id_runner.py`
+- Regression status:
+  - passed
+
+- Why this is considered sufficient verification depth for this project:
+  - the full active RTL pipeline is exercised end to end
+  - all major positive and negative behaviors are covered directly
+  - randomized traffic extends confidence beyond the small directed set
+  - protocol-level monitor checks guard against common control bugs without adding heavyweight infrastructure
