@@ -9,3 +9,6 @@ synth.v
 *.fst
 *.vcd
 *_results.xml
+
+# rule deck and prompt files
+rules/
