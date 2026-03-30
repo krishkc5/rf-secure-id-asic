@@ -52,11 +52,11 @@ AUTHORIZED_IDS = (0x1234, 0x5678, 0x9ABC, 0xDEF0)
 AES_KAT_PLAINTEXT = 0x00112233445566778899AABBCCDDEEFF
 AES_KAT_CIPHERTEXT = 0x69C4E0D86A7B0430D8CDB78070B4C55A
 
-CLASSIFY_LATENCY = 16
+CLASSIFY_LATENCY = 24
 DEFAULT_TIMEOUT_CYCLES = 32
-DEFAULT_UNRESPONSIVE_LATENCY = DEFAULT_TIMEOUT_CYCLES + 4
+DEFAULT_UNRESPONSIVE_LATENCY = DEFAULT_TIMEOUT_CYCLES + 10
 FORCED_TIMEOUT_CYCLES = 4
-FORCED_TIMEOUT_LATENCY = FORCED_TIMEOUT_CYCLES + 4
+FORCED_TIMEOUT_LATENCY = FORCED_TIMEOUT_CYCLES + 10
 NO_CLASSIFY_WINDOW = CLASSIFY_LATENCY + 1
 WRONG_PREAMBLE_NO_CLASSIFY_WINDOW = PACKET_WIDTH + CLASSIFY_LATENCY + 4
 BACK_TO_BACK_WINDOW = (2 * PACKET_WIDTH) + (2 * CLASSIFY_LATENCY) + 8
@@ -126,7 +126,7 @@ class ProtocolMonitor:
 
     async def _run(self) -> None:
         while True:
-            await RisingEdge(self.dut.clk)
+            await RisingEdge(self.dut.core_clk)
             await ReadOnly()
 
             self.cycle += 1
@@ -310,12 +310,12 @@ async def send_serial_bits(
     idle_after: bool = True,
 ) -> None:
     for bit_idx in range(msb_idx, lsb_idx - 1, -1):
-        await FallingEdge(dut.clk)
+        await FallingEdge(dut.core_clk)
         dut.serial_bit.value = (value >> bit_idx) & 0x1
-        await RisingEdge(dut.clk)
+        await RisingEdge(dut.core_clk)
 
     if idle_after:
-        await FallingEdge(dut.clk)
+        await FallingEdge(dut.core_clk)
         dut.serial_bit.value = 0
 
 
@@ -351,7 +351,7 @@ async def send_packet(
 
 async def setup_dut(dut) -> None:
     verify_aes_helper()
-    cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
+    cocotb.start_soon(Clock(dut.core_clk, CLK_PERIOD_NS, unit="ns").start())
     dut._protocol_monitor = ProtocolMonitor(dut)
     await apply_reset(dut)
     await ReadOnly()
@@ -381,14 +381,14 @@ async def apply_reset(dut) -> None:
     await Timer(1, unit="ns")
 
     for _ in range(3):
-        await RisingEdge(dut.clk)
+        await RisingEdge(dut.core_clk)
 
     dut.rst_n.value = 1
 
     # The active tops use a two-flop reset synchronizer, so wait for internal
     # reset release before starting stimulus.
     for _ in range(3):
-        await RisingEdge(dut.clk)
+        await RisingEdge(dut.core_clk)
 
 
 @cocotb.test()
@@ -508,14 +508,14 @@ async def reset_mid_packet_reception_prevents_classification(dut) -> None:
 
     await send_serial_bits(dut, packet, PACKET_WIDTH - 1, 80, idle_after=False)
 
-    await FallingEdge(dut.clk)
+    await FallingEdge(dut.core_clk)
     dut.rst_n.value = 0
     dut.serial_bit.value = 0
 
     for _ in range(2):
-        await RisingEdge(dut.clk)
+        await RisingEdge(dut.core_clk)
 
-    await FallingEdge(dut.clk)
+    await FallingEdge(dut.core_clk)
     dut.rst_n.value = 1
     dut.serial_bit.value = 0
 
@@ -673,7 +673,7 @@ async def randomized_packet_stream_smoke(dut) -> None:
             await expect_no_classification(dut, observation_cycles=expected_latency)
 
         for _ in range(4):
-            await RisingEdge(dut.clk)
+            await RisingEdge(dut.core_clk)
 
 
 @cocotb.test()
@@ -699,7 +699,7 @@ async def expect_classification(
     start_cycle = monitor.cycle
 
     for _ in range(expected_latency):
-        await RisingEdge(dut.clk)
+        await RisingEdge(dut.core_clk)
         await ReadOnly()
 
     expected_events = monitor.new_events(start_idx)
@@ -718,7 +718,7 @@ async def expect_classification(
         expected_authorized + expected_unauthorized + expected_unresponsive == 1
     ), "expected outputs must be mutually exclusive"
 
-    await RisingEdge(dut.clk)
+    await RisingEdge(dut.core_clk)
     await ReadOnly()
     assert int(dut.classify_valid.value) == 0
     assert len(monitor.new_events(start_idx)) == 1, "duplicate classification emitted"
@@ -731,7 +731,7 @@ async def collect_classification_events(
     start_idx = monitor.snapshot()
 
     for _ in range(observation_cycles):
-        await RisingEdge(dut.clk)
+        await RisingEdge(dut.core_clk)
         await ReadOnly()
 
     return monitor.new_events(start_idx)

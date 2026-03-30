@@ -15,7 +15,7 @@ Fixed packet width: `160` bits
 
 Serialization assumptions:
 - bits arrive `MSB` first
-- one bit per `clk`
+- one bit per `core_clk`
 - `preamble` is transmitted in the clear
 - `packet_type` is transmitted in the clear
 
@@ -37,52 +37,52 @@ Post-decrypt validity requires:
 
 ```text
 serial_bit
--> packet_rx
--> packet_parser
--> crc16_checker
--> aes_decrypt
--> plaintext_validator
--> cam
--> timeout_monitor
--> classifier
+-> rf_secure_id_packet_rx
+-> rf_secure_id_packet_parser
+-> rf_secure_id_crc16_checker
+-> rf_secure_id_aes_decrypt
+-> rf_secure_id_plaintext_validator
+-> rf_secure_id_cam
+-> rf_secure_id_timeout_monitor
+-> rf_secure_id_classifier
 ```
 
 ## Module Interfaces Summary
 
-`packet_rx`
-- input: `clk`, `rst_n`, `serial_bit`
+`rf_secure_id_packet_rx`
+- input: `core_clk`, `rst_n`, `serial_bit`
 - output: `packet_valid`, `packet_data[159:0]`
 
-`packet_parser`
-- input: `clk`, `rst_n`, `packet_valid`, `packet_data[159:0]`
+`rf_secure_id_packet_parser`
+- input: `core_clk`, `rst_n`, `packet_valid`, `packet_data[159:0]`
 - output: `parsed_valid`, `packet_type[7:0]`, `ciphertext[127:0]`, `crc_rx[15:0]`
 
-`crc16_checker`
-- input: `clk`, `rst_n`, `parsed_valid`, `packet_type[7:0]`, `ciphertext[127:0]`, `crc_rx[15:0]`
+`rf_secure_id_crc16_checker`
+- input: `core_clk`, `rst_n`, `parsed_valid`, `packet_type[7:0]`, `ciphertext[127:0]`, `crc_rx[15:0]`
 - output: `crc_valid`, `crc_ok`, `crc_calc[15:0]`
 
-`aes_decrypt`
-- input: `clk`, `rst_n`, `key_valid`, `key_in[127:0]`, `cipher_valid`, `ciphertext[127:0]`
+`rf_secure_id_aes_decrypt`
+- input: `core_clk`, `rst_n`, `key_valid`, `key_in[127:0]`, `cipher_valid`, `ciphertext[127:0]`
 - output: `plaintext_valid`, `plaintext[127:0]`, `decrypt_busy`
 
-`plaintext_validator`
-- input: `clk`, `rst_n`, `plaintext_valid`, `plaintext[127:0]`
+`rf_secure_id_plaintext_validator`
+- input: `core_clk`, `rst_n`, `plaintext_valid`, `plaintext[127:0]`
 - output: `decrypt_valid`, `decrypt_ok`, `id[15:0]`
 
-`cam`
-- input: `clk`, `rst_n`, `decrypt_valid`, `decrypt_ok`, `id[15:0]`
+`rf_secure_id_cam`
+- input: `core_clk`, `rst_n`, `decrypt_valid`, `decrypt_ok`, `id[15:0]`
 - output: `lookup_valid`, `id_hit`
 
-`timeout_monitor`
-- input: `clk`, `rst_n`, `start`, `done`
+`rf_secure_id_timeout_monitor`
+- input: `core_clk`, `rst_n`, `start`, `done`
 - output: `timeout_valid`
 
-`classifier`
-- input: `clk`, `rst_n`, `lookup_valid`, `id_hit`, `timeout_valid`
+`rf_secure_id_classifier`
+- input: `core_clk`, `rst_n`, `lookup_valid`, `id_hit`, `timeout_valid`
 - output: `classify_valid`, `authorized`, `unauthorized`, `unresponsive`
 
 `rf_secure_id_digital`
-- input: `clk`, `rst_n`, `serial_bit`
+- input: `core_clk`, `rst_n`, `serial_bit`
 - output: `classify_valid`, `authorized`, `unauthorized`, `unresponsive`
 
 ## CRC16 Convention
@@ -108,7 +108,7 @@ CRC convention:
 ## Simplifying Assumptions
 
 - The active integrated design is currently a fixed-key AES system.
-- The active top-level currently ties `aes_decrypt.key_valid = 0` and `key_in = 0`, so the default AES key is always used in the integrated design.
+- The active top-level currently ties `rf_secure_id_aes_decrypt.key_valid = 0` and `key_in = 0`, so the default AES key is always used in the integrated design.
 - Only one AES block is decrypted per packet.
 - No AES mode of operation is used.
 - Only one decrypt operation is in flight at a time.
@@ -120,7 +120,7 @@ CRC convention:
 
 - Default key:
   - `128'h000102030405060708090A0B0C0D0E0F`
-- `aes_decrypt` includes a synchronous key-loading interface:
+- `rf_secure_id_aes_decrypt` includes a synchronous key-loading interface:
   - `key_valid`
   - `key_in[127:0]`
 - In the active integrated top-level, this interface is reserved for future use and is tied inactive.
@@ -151,10 +151,10 @@ with the current fixed-function secure ID receiver use case.
 
 ## Timeout Semantics
 
-- `timeout_monitor` starts its countdown when `cipher_valid` is asserted
-- `timeout_monitor` cancels the countdown when `lookup_valid` is asserted before expiry
+- `rf_secure_id_timeout_monitor` starts its countdown when `cipher_valid` is asserted
+- `rf_secure_id_timeout_monitor` cancels the countdown when `lookup_valid` is asserted before expiry
 - if the countdown expires first, `timeout_valid` pulses for one cycle
-- `classifier` converts `timeout_valid` into:
+- `rf_secure_id_classifier` converts `timeout_valid` into:
   - `classify_valid = 1`
   - `authorized = 0`
   - `unauthorized = 0`
@@ -165,7 +165,7 @@ with the current fixed-function secure ID receiver use case.
 
 - Intended clock target: `50 MHz`
 - Intended serial data rate: `1 bit / cycle`
-- Expected dominant path: AES inverse round logic in `aes_decrypt`
+- Expected dominant path: AES inverse round logic in `rf_secure_id_aes_decrypt`
 - Expected AES decrypt latency: `10 cycles`
 - Expected end-to-end authorized / unauthorized classification latency: approximately `16 cycles` from packet end in the current implementation
 - If timing closure fails later, the first expected improvement is AES datapath pipelining

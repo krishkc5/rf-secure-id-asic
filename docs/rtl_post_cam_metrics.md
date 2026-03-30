@@ -2,7 +2,7 @@
 
 ## CAM RTL Changes
 
-- Upgraded [`cam.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/cam.sv) from a minimal hit-only lookup block into a more realistic parameterized CAM with:
+- Upgraded [`rf_secure_id_cam.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_cam.sv) from a minimal hit-only lookup block into a more realistic parameterized CAM with:
   - registered parallel match evaluation
   - internal `match_vector` generation across all valid entries
   - registered `match_index` metadata for the first matching entry
@@ -43,14 +43,14 @@
 ### Design Hierarchy Summary
 
 - `rf_secure_id_digital`: 1422 cells including submodules
-- `aes_decrypt`: 913 cells
-- `crc16_checker`: 411 cells
-- `cam`: 28 cells
-- `packet_rx`: 27 cells
-- `timeout_monitor`: 17 cells
-- `classifier`: 13 cells
-- `plaintext_validator`: 7 cells
-- `packet_parser`: 5 cells
+- `rf_secure_id_aes_decrypt`: 913 cells
+- `rf_secure_id_crc16_checker`: 411 cells
+- `rf_secure_id_cam`: 28 cells
+- `rf_secure_id_packet_rx`: 27 cells
+- `rf_secure_id_timeout_monitor`: 17 cells
+- `rf_secure_id_classifier`: 13 cells
+- `rf_secure_id_plaintext_validator`: 7 cells
+- `rf_secure_id_packet_parser`: 5 cells
 
 ### Top-Level Totals
 
@@ -66,25 +66,25 @@
 
 ### Module Cell Counts
 
-- `aes_decrypt`: 913 cells
-- `cam`: 28 cells
-- `crc16_checker`: 411 cells
-- `packet_rx`: 27 cells
-- `timeout_monitor`: 17 cells
+- `rf_secure_id_aes_decrypt`: 913 cells
+- `rf_secure_id_cam`: 28 cells
+- `rf_secure_id_crc16_checker`: 411 cells
+- `rf_secure_id_packet_rx`: 27 cells
+- `rf_secure_id_timeout_monitor`: 17 cells
 
 ## Warnings Worth Noting
 
 - Yosys reported 10 unique warnings during frontend/import.
 - The warnings are mainly about replacing internal memories/arrays with registers:
-  - internal helper arrays inside [`aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/aes_decrypt.sv)
-  - CAM storage arrays inside [`cam.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/cam.sv)
+  - internal helper arrays inside [`rf_secure_id_aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_aes_decrypt.sv)
+  - CAM storage arrays inside [`rf_secure_id_cam.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_cam.sv)
 - These warnings did not prevent `check`, `stat`, or `write_verilog` from succeeding.
 
 ## Interpretation
 
-- [`aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/aes_decrypt.sv) is still the dominant source of area/complexity by a large margin.
-- [`crc16_checker.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/crc16_checker.sv) is the second-largest logic block because its CRC is fully combinational over a 136-bit input bundle.
-- The upgraded [`cam.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/cam.sv) is now more structured and informative, but it is still small compared with AES and CRC logic.
+- [`rf_secure_id_aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_aes_decrypt.sv) is still the dominant source of area/complexity by a large margin.
+- [`rf_secure_id_crc16_checker.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_crc16_checker.sv) is the second-largest logic block because its CRC is fully combinational over a 136-bit input bundle.
+- The upgraded [`rf_secure_id_cam.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_cam.sv) is now more structured and informative, but it is still small compared with AES and CRC logic.
 
 ## Overall Status
 
@@ -94,7 +94,7 @@
 
 ## Key Loading and Assertions Update
 
-- Added a synchronous key-loading interface to [`aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/aes_decrypt.sv):
+- Added a synchronous key-loading interface to [`rf_secure_id_aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_aes_decrypt.sv):
   - new inputs: `key_valid`, `key_in[127:0]`
   - new internal register: `key_reg`
   - `key_reg` resets to the existing default AES-128 key
@@ -108,9 +108,9 @@
   - runtime key expansion is still future work
 
 - Added guarded SystemVerilog assertions in:
-  - [`classifier.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/classifier.sv) to enforce mutually exclusive outputs and ensure `classify_valid` maps to exactly one class
-  - [`timeout_monitor.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/timeout_monitor.sv) to check `timeout_valid` pulse width and active-state clearing after timeout
-  - [`aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/aes_decrypt.sv) to ensure a new decrypt is not accepted while busy
+  - [`rf_secure_id_classifier.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_classifier.sv) to enforce mutually exclusive outputs and ensure `classify_valid` maps to exactly one class
+  - [`rf_secure_id_timeout_monitor.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_timeout_monitor.sv) to check `timeout_valid` pulse width and active-state clearing after timeout
+  - [`rf_secure_id_aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_aes_decrypt.sv) to ensure a new decrypt is not accepted while busy
   - [`rf_secure_id_digital.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_digital.sv) to check `lookup_valid` and `timeout_valid` do not overlap
 - Assertions are guarded out of synthesis-oriented Yosys parsing with `ifndef SYNTHESIS` and `ifndef YOSYS`.
 
@@ -130,8 +130,8 @@
 
 - Updated post-change Yosys metrics:
   - total cells: `1435`
-  - `aes_decrypt` cells: `926`
-  - `cam` cells: `28`
+  - `rf_secure_id_aes_decrypt` cells: `926`
+  - `rf_secure_id_cam` cells: `28`
   - total memories: `34`
   - total memory bits: `69632`
 
@@ -140,12 +140,12 @@
   - the key-loading interface added a small amount of register/control overhead
   - the design remains verification-clean and synthesis-friendly while leaving dynamic key scheduling as a future enhancement
 
-## Reset Synchronization and Verification Depth Update
+## Reset Sequencing and Verification Depth Update
 
-- Added a 2-flop reset synchronizer in the active integrated tops:
+- Added a 2-flop reset sequencer in the active integrated tops:
   - [`rf_secure_id_digital.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_digital.sv)
   - [`rf_secure_id_digital_timeout4.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/tb/rf_secure_id_digital_timeout4.sv)
-- Internal pipeline modules now use synchronized reset release through `rst_n_sync`.
+- Internal pipeline modules now use next-state-driven reset values with top-level synchronized release through `rst_n_sync`.
 - Updated the cocotb reset helper to wait through synchronized reset release before applying stimulus.
 - Expanded the randomized cocotb stress test from a short smoke check to `128` packets with deterministic seed `0xC35A1234`.
 
@@ -166,8 +166,8 @@
 ### Updated Metrics
 
 - total cells: `1437`
-- `aes_decrypt` cells: `926`
-- `cam` cells: `28`
+- `rf_secure_id_aes_decrypt` cells: `926`
+- `rf_secure_id_cam`: `28`
 - `rf_secure_id_digital` local cells: `3`
 - total memories: `34`
 - total memory bits: `69632`
@@ -175,11 +175,11 @@
 ### Yosys Warnings Reviewed and Classified
 
 Yosys warnings reviewed and classified:
-- [`aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/aes_decrypt.sv):
+- [`rf_secure_id_aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_aes_decrypt.sv):
   - 8 warnings about local helper arrays (`byte_lane`, `subbed_lane`, `mixed_lane`) being lowered from memories into registers during frontend import
   - classification: benign for synthesis in the current Yosys flow
   - reason: these are fixed-size local function temporaries, not stateful design memories
-- [`cam.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/cam.sv):
+- [`rf_secure_id_cam.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_cam.sv):
   - 2 warnings about `cam_entries_reg` and `cam_valid_reg` being lowered into registers
   - classification: benign for synthesis in the current Yosys flow
   - reason: the current CAM is intentionally a register-based RTL model, not a memory macro
@@ -188,8 +188,8 @@ All current Yosys warnings are therefore reviewed and treated as benign frontend
 
 ### Interpretation
 
-- The reset synchronizer adds only a very small amount of top-level logic.
-- Area and logic complexity are still dominated by [`aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/aes_decrypt.sv).
+- The reset sequencer adds only a very small amount of top-level logic.
+- Area and logic complexity are still dominated by [`rf_secure_id_aes_decrypt.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_aes_decrypt.sv).
 - The stronger randomized regression improves confidence in packet sequencing, negative cases, and output exclusivity without changing RTL behavior.
 
 ## Verification Closure Update
