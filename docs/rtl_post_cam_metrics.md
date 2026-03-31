@@ -10,7 +10,7 @@
 - Preserved the active pipeline behavior by keeping `lookup_valid` and `id_hit` semantics unchanged.
 - Updated only the two CAM instantiations to leave the new metadata outputs unconnected:
   - [`rf_secure_id_digital.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_digital.sv)
-  - [`rf_secure_id_digital_timeout4.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/tb/rf_secure_id_digital_timeout4.sv)
+  - [`rf_secure_id_timeout4_top.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/tb/rf_secure_id_timeout4_top.sv)
 
 ## Verification Status
 
@@ -98,10 +98,10 @@
   - new inputs: `key_valid`, `key_in[127:0]`
   - new internal register: `key_reg`
   - `key_reg` resets to the existing default AES-128 key
-  - `key_reg` only updates when `decrypt_busy == 0`
+  - `key_reg` only updates when `decrypt_busy_q == 0`
 - Preserved existing decrypt behavior for the active design by tying the new key input off at the current tops:
   - [`rf_secure_id_digital.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_digital.sv)
-  - [`rf_secure_id_digital_timeout4.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/tb/rf_secure_id_digital_timeout4.sv)
+  - [`rf_secure_id_timeout4_top.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/tb/rf_secure_id_timeout4_top.sv)
 - Kept the key schedule fixed for now:
   - if `key_reg` matches the default key, the decrypt core uses the existing pre-expanded default round keys
   - if `key_reg` does not match the default key, the core still falls back to the default round keys
@@ -144,8 +144,8 @@
 
 - Added a 2-flop reset sequencer in the active integrated tops:
   - [`rf_secure_id_digital.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_digital.sv)
-  - [`rf_secure_id_digital_timeout4.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/tb/rf_secure_id_digital_timeout4.sv)
-- Internal pipeline modules now use next-state-driven reset values with top-level synchronized release through `rst_n_sync`.
+  - [`rf_secure_id_timeout4_top.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/tb/rf_secure_id_timeout4_top.sv)
+- Internal pipeline modules now use next-state-driven reset values with top-level synchronized release through `rst_pipe_n`.
 - Updated the cocotb reset helper to wait through synchronized reset release before applying stimulus.
 - Expanded the randomized cocotb stress test from a short smoke check to `128` packets with deterministic seed `0xC35A1234`.
 
@@ -212,8 +212,8 @@ All current Yosys warnings are therefore reviewed and treated as benign frontend
   - wrong-preamble / malformed traffic
 - The randomized test uses a Python-side expected-outcome model and checks the observed classification against that expected result for every packet.
 - An always-on cocotb protocol monitor now checks throughout regression:
-  - `authorized`, `unauthorized`, and `unresponsive` stay mutually exclusive
-  - `classify_valid` is a one-cycle pulse
+  - `class_grant_q`, `class_reject_q`, and `unresponsive_q` stay mutually exclusive
+  - `classify_valid_q` is a one-cycle pulse
   - classification events are not duplicated within a single expected response window
   - invalid scenarios do not emit unexpected classifications in their observation windows
 - The regression also includes an explicit coverage-closure test that requires these flags:
@@ -236,3 +236,82 @@ All current Yosys warnings are therefore reviewed and treated as benign frontend
   - all major positive and negative behaviors are covered directly
   - randomized traffic extends confidence beyond the small directed set
   - protocol-level monitor checks guard against common control bugs without adding heavyweight infrastructure
+
+## Non-Style Signoff Closure Update
+
+- Added checked-in timing constraint artifacts:
+  - [`constraints/rf_secure_id_digital.sdc`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/constraints/rf_secure_id_digital.sdc)
+  - [`constraints/README.md`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/constraints/README.md)
+- Added a reproducible digital sanity script:
+  - [`run_digital_backend_sanity.sh`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/scripts/run_digital_backend_sanity.sh)
+- Added a consolidated signoff-intent note:
+  - [`digital_backend_signoff.md`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/docs/digital_backend_signoff.md)
+- Marked the production and timeout-wrapper reset synchronizer flops with `ASYNC_REG`:
+  - [`rf_secure_id_digital.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/rtl/rf_secure_id_digital.sv)
+  - [`rf_secure_id_timeout4_top.sv`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/tb/rf_secure_id_timeout4_top.sv)
+
+- These additions close the remaining non-style project-level gaps around:
+  - CDC implementation intent
+  - checked-in timing constraints
+  - reproducible synthesis / verification flow
+  - documented timing / resource / power / optimization strategy
+
+### Current Verification / Synthesis Status After This Update
+
+- Cocotb regression:
+  - `uv run --python .venv/bin/python -m pytest -s tb/test_rf_secure_id_runner.py`
+  - result: `2 passed`
+- Yosys check:
+  - `yosys -p "read_verilog -sv rtl/*.sv; hierarchy -top rf_secure_id_digital; proc; opt; check"`
+  - result: `Found and reported 0 problems.`
+- Updated Yosys stat baseline:
+  - total cells: `1466`
+  - `rf_secure_id_aes_decrypt`: `935`
+  - `rf_secure_id_crc16_checker`: `415`
+  - `rf_secure_id_cam`: `31`
+  - total memories: `34`
+  - total memory bits: `69632`
+
+## Synthesis Closure Update
+
+- Added checked-in backend implementation intent:
+  - [`rf_secure_id_backend_impl.tcl`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/constraints/rf_secure_id_backend_impl.tcl)
+- Tightened reset synchronizer preservation in the two top-level wrappers with
+  `ASYNC_REG` plus `DONT_TOUCH`.
+- Added a project-level synthesis rule-resolution note covering:
+  - explicit one-hot FSM preservation
+  - `_f/_nxt` internal naming with `_q` registered outputs
+  - plain `case` plus explicit `default` as the portability baseline
+- Added quantified resource and power evidence using the current Yosys stat baseline.
+- Added explicit stage-by-stage retiming ownership and optimization priority in:
+  - [`digital_backend_signoff.md`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/docs/digital_backend_signoff.md)
+  - [`digital_pipeline_aes.md`](/Users/krishnachemudupati/Projects/rf-secure-id-asic/docs/digital_pipeline_aes.md)
+
+- Intended synthesis-category closure after this update:
+  - `SYNTHESIS_CDC`
+  - `SYNTHESIS_RESOURCES`
+  - `SYNTHESIS_FSM`
+  - `SYNTHESIS_PIPELINING`
+  - `SYNTHESIS_POWER`
+  - `SYNTHESIS_OPTIMIZATION`
+  - `SYNTHESIS_BEST_PRACTICES`
+
+- Cocotb regression:
+  - command: `uv run --python .venv/bin/python -m pytest -s tb/test_rf_secure_id_runner.py`
+  - result: `2 passed`
+- Yosys check:
+  - command: `yosys -p "read_verilog -sv rtl/*.sv; hierarchy -top rf_secure_id_digital; proc; opt; check"`
+  - result: `Found and reported 0 problems.`
+- Yosys stat:
+  - command: `yosys -p "read_verilog -sv rtl/*.sv; hierarchy -top rf_secure_id_digital; proc; opt; stat"`
+  - result: completed successfully with the same `8` benign AES helper-array warnings
+
+### Current Key Metrics After This Update
+
+- total cells: `1466`
+- `rf_secure_id_aes_decrypt`: `935`
+- `rf_secure_id_cam`: `31`
+- `rf_secure_id_crc16_checker`: `415`
+- `rf_secure_id_digital` local cells: `5`
+- total memories: `34`
+- total memory bits: `69632`

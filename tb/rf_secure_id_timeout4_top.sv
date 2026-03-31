@@ -1,8 +1,8 @@
 //=====================================================================================================
-// Module: rf_secure_id_digital
-// Function: Top-level digital receive pipeline for AES-protected secure ID
-//           packets. The wrapper performs reset synchronization and stage-to-
-//           stage wiring only.
+// Module: rf_secure_id_timeout4_top
+// Function: Test-only top-level wrapper matching rf_secure_id_digital while
+//           overriding the timeout monitor threshold to 4 cycles for the
+//           forced-timeout cocotb scenario.
 //
 // Parameters:
 //   None.
@@ -20,19 +20,7 @@
 //   None.
 //
 // Included Files:
-//   None at the top of file.
-//   Raw SVA is included at the bottom of the module body to satisfy the
-//   project include-style assertion policy.
-//
-// Defines:
-//   RF_SECURE_ID_SIMONLY : When set, compile the raw SVA include at the
-//                          bottom of the module body.
-//                          When clear, no inline SVA is compiled.
-//   RF_SECURE_ID_SVA_OFF : When set, force the SVA include off even if
-//                          RF_SECURE_ID_SIMONLY is set.
-//                          When clear, SVA follows RF_SECURE_ID_SIMONLY.
-//   Default build state  : Both defines are unset in synthesis and Yosys
-//                          sanity flow. RF_SECURE_ID_SIMONLY is simulation-only.
+//   None.
 //
 // State Variables:
 //   reg_reset_sync_stage1_f[0:0] : First stage of reset release synchronization, reset to 0.
@@ -58,14 +46,14 @@
 //   evt_timeout_rsp[0:0]         : Registered timeout pulse from rf_secure_id_timeout_monitor.
 //
 // Reset Behavior:
-//   Active-low reset holds the internal pipeline in reset until the local
+//   Active-low reset holds the verification wrapper in reset until the local
 //   2-flop synchronizer releases rst_pipe_n on clean core_clk edges.
 //
 // Reset Rationale:
 //   reg_reset_sync_stage*_f reset to 0 so rst_pipe_n stays asserted until two clean core_clk edges.
 //   reg_bit_lane_f resets to 0 to discard any stale boundary sample during reset release.
-//   All downstream stage outputs are reset inside their owning modules to prevent false packets,
-//   decrypts, lookups, timeouts, or terminal classifications.
+//   All downstream stage outputs are reset inside their owning modules so the timeout-focused
+//   wrapper still comes out of reset without false packets or classifications.
 //
 // Sub-modules:
 //   rf_secure_id_packet_rx           : Detect preamble and assemble a 160-bit packet.
@@ -74,115 +62,82 @@
 //   rf_secure_id_aes_decrypt         : AES-128 iterative decrypt block.
 //   rf_secure_id_plaintext_validator : Enforce plaintext structure and recover ID.
 //   rf_secure_id_cam                 : Parallel ID lookup block.
-//   rf_secure_id_timeout_monitor     : Request timeout watchdog.
+//   rf_secure_id_timeout_monitor     : Request timeout watchdog with 4-cycle override.
 //   rf_secure_id_classifier          : Convert lookup / timeout result to final outputs.
-//   Parameter Policy                 : rf_secure_id_cam uses fixed default parameters
-//                                      P_ENTRY_WIDTH=16 and P_DEPTH=8 because the
-//                                      published secure-ID format uses a 16-bit tag
-//                                      and the ruled baseline authorization-set size is 8.
-//                                      rf_secure_id_timeout_monitor uses fixed default
-//                                      P_TIMEOUT_CYCLES=32 because that is the production
-//                                      timeout contract documented for the active pipeline.
+//   Parameter Policy                 : rf_secure_id_cam keeps the production defaults
+//                                      P_ENTRY_WIDTH=16 and P_DEPTH=8 so only timeout
+//                                      behavior changes in this wrapper. rf_secure_id_timeout_monitor
+//                                      fixes P_TIMEOUT_CYCLES=4 solely to accelerate the
+//                                      forced-timeout regression without altering other behavior.
 //
 // Clock / Reset:
 //   core_clk : Single synchronous clock domain. Target integration frequency is 50 MHz.
 //   rst_n    : Active-low reset sampled by the local 2-flop reset synchronizer.
 //
 // Timing:
-//   STA_CRITICAL: System critical paths are expected in AES decrypt first, CAM compare second,
-//                 and packet receive shift logic third.
-//   Throughput : One packet classification in flight at a time.
-//   Latency    : Packet classification latency is determined by packet receive,
-//                CRC, AES, validation, CAM, timeout, and classifier stage depth.
-//   Top Critical Paths:
-//     1. rf_secure_id_aes_decrypt inverse-round datapath.
-//     2. rf_secure_id_aes_decrypt round-key select plus state update.
-//     3. rf_secure_id_cam parallel compare and first-hit selection.
-//     4. rf_secure_id_packet_rx preamble detect and payload shift update.
-//     5. rf_secure_id_crc16_checker 136-bit CRC reduction path.
-//     6. rf_secure_id_plaintext_validator structure-check compare path.
-//     7. rf_secure_id_timeout_monitor countdown compare and pulse generation.
-//     8. rf_secure_id_classifier terminal class selection.
-//     9. reset synchronizer release path into the active pipeline.
-//    10. top-level evt_crc_fire -> timeout/aes start qualification.
+//   STA_CRITICAL: Verification wrapper inherits the production critical paths
+//                 while reducing timeout latency for forced-timeout coverage.
+//   Throughput : Same as rf_secure_id_digital for normal traffic.
+//   Latency    : Timeout-focused regression uses a 4-cycle timeout threshold
+//                instead of the default 32-cycle threshold.
 //
 // Synthesis Guidance:
 //   Clock Source       : Primary 50 MHz system clock with nominal 50% duty cycle.
-//   Constraints        : No internal false-path or multicycle exceptions are expected in the
-//                        active pipeline. Integration-level I/O timing is documented separately.
-//   CDC Strategy       : The only asynchronous control sampled at this boundary is rst_n into
-//                        core_clk. A 2-flop synchronizer marked ASYNC_REG is used for reset
-//                        release, and no data CDC paths exist in the active packet pipeline.
-//   CDC Placement      : Synchronizer flops must be kept adjacent, excluded from retiming, and
-//                        reviewed for MTBF against the low-rate reset-release use case.
-//   Interface Budget   : serial_bit is captured in the first stage and final classification
-//                        outputs are registered at the top boundary.
-//   Resource Expectation: AES decrypt dominates area and timing; CAM is the next largest block.
-//                         No clock gating, generated clocks, or embedded memory macros are used.
-//   Resource Estimate   : ~3 wrapper state bits, 5 Yosys sanity cells, 0 RAMs, 0 DSPs,
-//                         and ~0.3% of the 1466-cell top-level baseline.
-//   Timing Margin      : Target >=10% post-route slack margin at the 50 MHz integration point.
-//   Signoff Follow-up  : Gate-level simulation, RTL-to-netlist equivalence, and timing-focused
-//                        regression remain required final signoff activities outside this repo.
-//                        Back-annotated timing simulation should focus on reset release,
-//                        packet framing, AES completion, and timeout classification.
-//   Post-Synth Checks  : Required scenarios are reset release, authorized classification,
-//                        unauthorized classification, invalid plaintext timeout, and
-//                        wrong-preamble / bad-CRC rejection with X-propagation review.
-//   Equivalence        : RTL-to-netlist equivalence is required with AES round-key constants,
-//                        reset synchronizer flops, and SVA excluded from the compare point set.
-//   X Strategy         : All architectural state is explicitly reset. Gate-level regression should
-//                        confirm no X leakage reaches classification outputs after reset release.
-//   Power Notes        : Highest toggle activity is expected in AES state transforms, CAM compares,
-//                        and packet receive shifters. No clock gating or operand isolation is used.
-//                        Future optimization candidates are AES operand isolation and CAM gating.
-//   Area Notes         : AES decrypt is the dominant area block, CAM is second, and the remaining
-//                        control-oriented stages are comparatively small.
-//   Area Breakdown     : Expected ordering is AES decrypt >> CAM > packet receive / CRC >
-//                        plaintext validator / timeout / classifier / reset synchronization.
+//   Constraints        : Verification-only wrapper; no production timing exceptions intended.
+//   CDC Strategy       : Matches rf_secure_id_digital: rst_n enters through a 2-flop
+//                        ASYNC_REG synchronizer and serial_bit is captured at the wrapper
+//                        boundary before the production packet receive stage.
+//   CDC Placement      : Keep the reset synchronizer flops adjacent and exclude them from
+//                        retiming so the verification wrapper matches production reset release.
+//   Interface Budget   : Same registered top-level boundaries as rf_secure_id_digital.
+//   Resource Expectation: Matches the production top except for the timeout parameter override.
+//   Resource Estimate   : ~3 wrapper state bits, 5 local wrapper cells, 0 RAMs, 0 DSPs,
+//                         plus the same downstream hierarchy as rf_secure_id_digital.
+//   Timing Margin      : Uses the same 50 MHz target margin assumptions as the production top.
+//   Signoff Follow-up  : This wrapper is excluded from production signoff and exists only for
+//                        directed timeout regression coverage.
 //
 // Constraint Template:
 //   create_clock -name core_clk -period 20.000 [get_ports core_clk]
 //   set_input_delay  -clock [get_clocks core_clk] 4.000 [get_ports {rst_n serial_bit}]
 //   set_output_delay -clock [get_clocks core_clk] 4.000
 //                    [get_ports {classify_valid_q class_grant_q class_reject_q unresponsive_q}]
-//   No false-path or multicycle exceptions are expected inside this top-level wrapper.
+//   No false-path or multicycle exceptions are expected inside this verification wrapper.
 //
 // Specification Reference:
-//   Active pipeline architecture, packet format, and timeout semantics are
-//   documented in docs/digital_pipeline_aes.md.
-//   Mixed-signal boundary and reset-release assumptions are documented in
-//   docs/analog_digital_interface.md.
+//   Functional behavior matches docs/digital_pipeline_aes.md except for the
+//   reduced timeout threshold used only for cocotb coverage.
 //
 // ASCII Timing Sketch:
 //   core_clk        : |0|1|2|...|
 //   serial_bit      :  b0 b1 b2 ...
-//   evt_crc_fire    :  0  0  1  ...
 //   evt_aes_kick    :  0  0  1  ...
-//   classify_valid_q:  0  0  0  ... pulse after downstream pipeline latency
+//   evt_timeout_rsp :  0  0  0  ... pulse after 4-cycle watchdog expiry
+//   unresponsive_q  :  0  0  0  ... pulse after classifier stage
+//
+// Algorithm Summary:
+//   Mirror the production top-level wiring exactly, but override only the
+//   timeout watchdog threshold to accelerate the forced-timeout regression.
 //
 // Assumptions:
-//   serial_bit is synchronous to core_clk at the wrapper boundary.
-//   Only one decrypt / lookup transaction is active in the integrated path.
+//   This wrapper is compiled only in verification flows and never replaces
+//   the production top in implementation.
 //
 // CRITICAL:
-//   The wrapper boundary flops and registered stage ordering must remain
-//   intact; removing them changes the published latency and timing model.
+//   The timeout override is required for the forced-timeout regression and
+//   must not leak into the production top-level configuration.
 //
 // TOOL_DEPENDENCY:
 //   The reset synchronizer uses ASYNC_REG and DONT_TOUCH attributes.
-//   The active project baseline expects implementation tools to honor those
-//   attributes or apply equivalent backend constraints.
 //
 // LIMITATION:
-//   The integrated top currently ties the runtime key-loading interface inactive
-//   and therefore operates with the built-in AES key schedule.
+//   This wrapper is for verification only and is not part of the production RTL path.
 //
 // Interface Reference:
-//   Top-level port semantics and pipeline connectivity are documented in
-//   docs/digital_pipeline_aes.md and docs/analog_digital_interface.md.
+//   Production top-level semantics are documented in docs/digital_pipeline_aes.md;
+//   this wrapper changes only the timeout threshold for verification.
 //=====================================================================================================
-module rf_secure_id_digital (
+module rf_secure_id_timeout4_top (
     input  logic core_clk,
     input  logic rst_n,
     input  logic serial_bit,
@@ -231,7 +186,7 @@ module rf_secure_id_digital (
     //========================================================================
     // Combinatorial next-state logic
     //========================================================================
-    always_comb begin : top_next_state_logic
+    always_comb begin : timeout4_top_next_state_logic
         // Synchronize reset release into the local clock domain while leaving
         // all packet-processing behavior inside the registered sub-modules.
         reg_reset_sync_stage1_nxt = reg_reset_sync_stage1_f;
@@ -251,7 +206,7 @@ module rf_secure_id_digital (
     //========================================================================
     // Sequential register update
     //========================================================================
-    always_ff @(posedge core_clk) begin : top_register_update
+    always_ff @(posedge core_clk) begin : timeout4_top_register_update
         reg_reset_sync_stage1_f <= reg_reset_sync_stage1_nxt;
         reg_reset_sync_stage2_f <= reg_reset_sync_stage2_nxt;
         reg_bit_lane_f          <= reg_bit_lane_nxt;
@@ -297,7 +252,7 @@ module rf_secure_id_digital (
         .rx_crc_i      (bus_crc_lane),
         .crc_valid_q (evt_crc_fire),
         .crc_ok_q    (flag_crc_pass),
-        .crc_calc_q  () // INTENTIONAL_OPEN: debug-only CRC visibility unused at top level.
+        .crc_calc_q  () // INTENTIONAL_OPEN: debug-only CRC visibility unused by timeout test wrapper.
     );
 
     // AES stage: iteratively decrypt a single accepted ciphertext block at a time.
@@ -310,7 +265,7 @@ module rf_secure_id_digital (
         .cipher_block_i (bus_cipher_lane),
         .plain_fire_q   (evt_plain_rsp),
         .plain_block_q  (bus_plain_lane),
-        .decrypt_busy_q () // INTENTIONAL_OPEN: busy is not consumed by the current top-level wrapper.
+        .decrypt_busy_q () // INTENTIONAL_OPEN: busy is not consumed by the forced-timeout wrapper.
     );
 
     // Plaintext validation stage: enforce the structural contract and recover the ID field.
@@ -333,12 +288,14 @@ module rf_secure_id_digital (
         .probe_tag_i   (bus_tag_lane),
         .lookup_fire_q (evt_lookup_rsp),
         .lookup_hit_q  (flag_lookup_hit),
-        .lookup_slot_q (), // INTENTIONAL_OPEN: CAM metadata not required by the active classifier stage.
-        .lookup_multi_q()  // INTENTIONAL_OPEN: CAM metadata not required by the active classifier stage.
+        .lookup_slot_q (), // INTENTIONAL_OPEN: CAM metadata not required by the timeout regression wrapper.
+        .lookup_multi_q()  // INTENTIONAL_OPEN: CAM metadata not required by the timeout regression wrapper.
     );
 
-    // Timeout stage: convert missing lookup completion into a one-cycle timeout pulse.
-    rf_secure_id_timeout_monitor i_rf_secure_id_timeout_monitor (
+    // Timeout stage: shorten the watchdog threshold to force timeout coverage in simulation.
+    rf_secure_id_timeout_monitor #(
+        .P_TIMEOUT_CYCLES(4) // Default is 32; forced to 4 for timeout-focused regression coverage.
+    ) i_rf_secure_id_timeout_monitor (
         .core_clk    (core_clk),
         .rst_n       (rst_pipe_n),
         .kick_evt_i    (evt_aes_kick),
@@ -358,13 +315,5 @@ module rf_secure_id_digital (
         .class_reject_q  (class_reject_q),
         .unresponsive_q  (unresponsive_q)
     );
-
-`ifndef RF_SECURE_ID_SVA_OFF
-`ifdef RF_SECURE_ID_SIMONLY
-
-`include "sva/rf_secure_id_digital_sva.sv"
-
-`endif // RF_SECURE_ID_SIMONLY
-`endif // RF_SECURE_ID_SVA_OFF
 
 endmodule

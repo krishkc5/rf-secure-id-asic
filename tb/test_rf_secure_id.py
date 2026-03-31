@@ -1,3 +1,4 @@
+import os
 import random
 
 import cocotb
@@ -62,6 +63,7 @@ WRONG_PREAMBLE_NO_CLASSIFY_WINDOW = PACKET_WIDTH + CLASSIFY_LATENCY + 4
 BACK_TO_BACK_WINDOW = (2 * PACKET_WIDTH) + (2 * CLASSIFY_LATENCY) + 8
 RANDOM_STRESS_SEED = 0xC35A1234
 RANDOM_STRESS_PACKETS = 512
+NETLIST_SMOKE_ONLY = os.getenv("RF_SECURE_ID_NETLIST_SMOKE", "0") == "1"
 
 REQUIRED_COVERAGE_FLAGS = (
     "authorized_classification_observed",
@@ -90,6 +92,10 @@ def coverage_summary() -> str:
         f"{flag}={'Y' if COVERAGE_FLAGS[flag] else 'N'}"
         for flag in REQUIRED_COVERAGE_FLAGS
     )
+
+
+def using_netlist_smoke_mode() -> bool:
+    return NETLIST_SMOKE_ONLY
 
 
 def expected_outcome_for_scenario(
@@ -131,11 +137,11 @@ class ProtocolMonitor:
 
             self.cycle += 1
 
-            classify_valid = int(self.dut.classify_valid.value)
+            classify_valid = int(self.dut.classify_valid_q.value)
             outputs = (
-                int(self.dut.authorized.value),
-                int(self.dut.unauthorized.value),
-                int(self.dut.unresponsive.value),
+                int(self.dut.class_grant_q.value),
+                int(self.dut.class_reject_q.value),
+                int(self.dut.unresponsive_q.value),
             )
 
             assert sum(outputs) <= 1, f"outputs not mutually exclusive: {outputs}"
@@ -356,14 +362,14 @@ async def setup_dut(dut) -> None:
     await apply_reset(dut)
     await ReadOnly()
 
-    assert int(dut.classify_valid.value) == 0
-    assert int(dut.authorized.value) == 0
-    assert int(dut.unauthorized.value) == 0
-    assert int(dut.unresponsive.value) == 0
+    assert int(dut.classify_valid_q.value) == 0
+    assert int(dut.class_grant_q.value) == 0
+    assert int(dut.class_reject_q.value) == 0
+    assert int(dut.unresponsive_q.value) == 0
 
 
 def using_forced_timeout_top(dut) -> bool:
-    return dut._name == "rf_secure_id_digital_timeout4"
+    return dut._name == "rf_secure_id_timeout4_top"
 
 
 def random_unauthorized_id(rng: random.Random) -> int:
@@ -391,7 +397,7 @@ async def apply_reset(dut) -> None:
         await RisingEdge(dut.core_clk)
 
 
-@cocotb.test()
+@cocotb.test(skip=NETLIST_SMOKE_ONLY)
 async def authorized_packet_with_correct_crc(dut) -> None:
     if using_forced_timeout_top(dut):
         dut._log.info("Skipping default-path test on short-timeout wrapper.")
@@ -408,7 +414,7 @@ async def authorized_packet_with_correct_crc(dut) -> None:
     )
 
 
-@cocotb.test()
+@cocotb.test(skip=NETLIST_SMOKE_ONLY)
 async def unauthorized_packet_with_correct_crc(dut) -> None:
     if using_forced_timeout_top(dut):
         dut._log.info("Skipping default-path test on short-timeout wrapper.")
@@ -425,7 +431,7 @@ async def unauthorized_packet_with_correct_crc(dut) -> None:
     )
 
 
-@cocotb.test()
+@cocotb.test(skip=NETLIST_SMOKE_ONLY)
 async def packet_with_bad_crc(dut) -> None:
     if using_forced_timeout_top(dut):
         dut._log.info("Skipping default-path test on short-timeout wrapper.")
@@ -437,7 +443,7 @@ async def packet_with_bad_crc(dut) -> None:
     await expect_no_classification(dut)
 
 
-@cocotb.test()
+@cocotb.test(skip=NETLIST_SMOKE_ONLY)
 async def wrong_preamble_produces_no_classification(dut) -> None:
     if using_forced_timeout_top(dut):
         dut._log.info("Skipping default-path test on short-timeout wrapper.")
@@ -457,7 +463,7 @@ async def wrong_preamble_produces_no_classification(dut) -> None:
     assert events == [], f"unexpected classification events for wrong preamble: {events}"
 
 
-@cocotb.test()
+@cocotb.test(skip=NETLIST_SMOKE_ONLY)
 async def back_to_back_valid_packets_classify_in_order(dut) -> None:
     if using_forced_timeout_top(dut):
         dut._log.info("Skipping default-path test on short-timeout wrapper.")
@@ -489,7 +495,7 @@ async def back_to_back_valid_packets_classify_in_order(dut) -> None:
     assert events[0][0] < events[1][0], f"classifications out of order: {events}"
 
 
-@cocotb.test()
+@cocotb.test(skip=NETLIST_SMOKE_ONLY)
 async def reset_mid_packet_reception_prevents_classification(dut) -> None:
     if using_forced_timeout_top(dut):
         dut._log.info("Skipping default-path test on short-timeout wrapper.")
@@ -524,7 +530,7 @@ async def reset_mid_packet_reception_prevents_classification(dut) -> None:
     assert events == [], f"unexpected classification after mid-packet reset: {events}"
 
 
-@cocotb.test()
+@cocotb.test(skip=NETLIST_SMOKE_ONLY)
 async def structurally_invalid_plaintext_produces_unresponsive(dut) -> None:
     if using_forced_timeout_top(dut):
         dut._log.info("Skipping default-path test on short-timeout wrapper.")
@@ -550,7 +556,7 @@ async def structurally_invalid_plaintext_produces_unresponsive(dut) -> None:
     )
 
 
-@cocotb.test()
+@cocotb.test(skip=NETLIST_SMOKE_ONLY)
 async def forced_timeout_short_threshold_produces_unresponsive(dut) -> None:
     if not using_forced_timeout_top(dut):
         dut._log.info("Skipping short-timeout-only test on default top.")
@@ -567,7 +573,7 @@ async def forced_timeout_short_threshold_produces_unresponsive(dut) -> None:
     )
 
 
-@cocotb.test()
+@cocotb.test(skip=NETLIST_SMOKE_ONLY)
 async def randomized_packet_stream_smoke(dut) -> None:
     if using_forced_timeout_top(dut):
         dut._log.info("Skipping default-path test on short-timeout wrapper.")
@@ -676,7 +682,7 @@ async def randomized_packet_stream_smoke(dut) -> None:
             await RisingEdge(dut.core_clk)
 
 
-@cocotb.test()
+@cocotb.test(skip=NETLIST_SMOKE_ONLY)
 async def verification_closure_summary(dut) -> None:
     if using_forced_timeout_top(dut):
         dut._log.info("Skipping default-path coverage closure test on short-timeout wrapper.")
@@ -685,6 +691,26 @@ async def verification_closure_summary(dut) -> None:
     missing_flags = missing_coverage_flags()
     dut._log.info(f"Coverage summary: {coverage_summary()}")
     assert not missing_flags, f"missing required coverage flags: {missing_flags}"
+
+
+@cocotb.test(skip=not NETLIST_SMOKE_ONLY)
+async def synthesized_netlist_smoke(dut) -> None:
+    assert not using_forced_timeout_top(dut), "netlist smoke uses the production top only"
+
+    await setup_dut(dut)
+
+    await send_packet(dut, TEST_PACKET_TYPE, AUTHORIZED_ID, corrupt_crc=False)
+    await expect_classification(
+        dut,
+        expected_authorized=1,
+        expected_unauthorized=0,
+        expected_unresponsive=0,
+        expected_latency=CLASSIFY_LATENCY,
+    )
+
+    mark_coverage("bad_crc_case_exercised")
+    await send_packet(dut, TEST_PACKET_TYPE, AUTHORIZED_ID, corrupt_crc=True)
+    await expect_no_classification(dut)
 
 
 async def expect_classification(
@@ -720,7 +746,7 @@ async def expect_classification(
 
     await RisingEdge(dut.core_clk)
     await ReadOnly()
-    assert int(dut.classify_valid.value) == 0
+    assert int(dut.classify_valid_q.value) == 0
     assert len(monitor.new_events(start_idx)) == 1, "duplicate classification emitted"
 
 

@@ -9,7 +9,7 @@
 //   LP_NUM_ROUNDS             = 10 AES-128 inverse rounds.
 //   LP_ROUND_INDEX_WIDTH      = Width of the iterative round counter.
 //   LP_DEFAULT_KEY            = Built-in fixed AES-128 key.
-//   LP_DEFAULT_ROUND_KEY_*    = Pre-expanded round-key schedule for LP_DEFAULT_KEY.
+//   LP_DEFAULT_ROUNDKEY_*     = Pre-expanded round-key schedule for LP_DEFAULT_KEY.
 //   LP_AES_DECRYPT_FSM_*      = One-hot decrypt controller state encodings.
 //
 // Ports:
@@ -18,10 +18,10 @@
 //   key_valid      : Synchronous key update request, accepted only while idle.
 //   key_in         : Replacement AES key input.
 //   cipher_valid   : One-cycle pulse starting a decrypt operation.
-//   ciphertext     : 128-bit AES ciphertext block.
-//   plaintext_valid: One-cycle pulse indicating plaintext output is valid.
-//   plaintext      : 128-bit decrypted plaintext block.
-//   decrypt_busy   : High while the iterative decrypt engine is active.
+//   cipher_block_i : 128-bit AES ciphertext block.
+//   plain_fire_q   : One-cycle pulse indicating plaintext output is valid.
+//   plain_block_q  : 128-bit decrypted plaintext block.
+//   decrypt_busy_q : High while the iterative decrypt engine is active.
 //
 // Functions:
 //   function_get_default_round_key : Return pre-expanded round key by index.
@@ -35,18 +35,34 @@
 //   function_inv_round             : Full inverse round with MixColumns.
 //   function_inv_final_round       : Final inverse round without MixColumns.
 //
+// Included Files:
+//   None at the top of file.
+//   Raw SVA is included at the bottom of the module body to satisfy the
+//   project include-style assertion policy.
+//
 // State Variables:
-//   reg_key_valid_in_f[0:0]                  : Boundary capture for key_valid, reset to 0.
-//   reg_key_in_in_f[127:0]                   : Boundary capture for key_in, reset to 0.
-//   reg_cipher_valid_in_f[0:0]               : Boundary capture for cipher_valid, reset to 0.
-//   reg_ciphertext_in_f[127:0]               : Boundary capture for ciphertext, reset to 0.
-//   reg_aes_decrypt_fsm_state_f[1:0]         : One-hot decrypt FSM, reset to IDLE.
+//   reg_key_load_f[0:0]                      : Boundary capture for key_valid, reset to 0.
+//   reg_key_word_f[127:0]                    : Boundary capture for key_in, reset to 0.
+//   reg_cipher_evt_f[0:0]                    : Boundary capture for cipher_valid, reset to 0.
+//   reg_cipher_bus_f[127:0]                  : Boundary capture for cipher_block_i, reset to 0.
+//   state_aes_decrypt_f[1:0]                 : One-hot decrypt FSM, reset to IDLE.
 //   reg_state_f[127:0]                       : Iterative AES state register, reset to 0.
 //   reg_key_f[127:0]                         : Latched key register, reset to LP_DEFAULT_KEY.
 //   reg_round_index_f[LP_ROUND_INDEX_WIDTH]  : Iterative round counter, reset to 0.
-//   reg_plaintext_valid_f[0:0]               : Output pulse register, reset to 0.
-//   reg_plaintext_f[127:0]                   : Registered plaintext output, reset to 0.
-//   reg_decrypt_busy_f[0:0]                  : Registered in-flight flag, reset to 0.
+//   reg_plain_evt_f[0:0]                     : Output pulse register, reset to 0.
+//   reg_plain_lane_f[127:0]                  : Registered plaintext output, reset to 0.
+//   reg_busy_hold_f[0:0]                     : Registered in-flight flag, reset to 0.
+//
+// Reset Behavior:
+//   Active-low reset clears captured key/data requests, returns the decrypt
+//   controller to IDLE, reloads the default key, and forces outputs low.
+//
+// Reset Rationale:
+//   Boundary capture registers reset to 0 so stale key or cipher_block_i requests are discarded.
+//   FSM, AES state, and round counter reset to IDLE / zero so no decrypt operation is in flight.
+//   reg_key_f resets to LP_DEFAULT_KEY so the integrated fixed-key behavior is deterministic.
+//   Output and busy registers reset to 0 so no false plain_fire_q pulse or busy indication
+//   escapes reset.
 //
 // Sub-modules:
 //   None.
@@ -65,31 +81,91 @@
 // Synthesis Guidance:
 //   Clock Source       : Primary 50 MHz system clock with nominal 50% duty cycle.
 //   Constraints        : No internal false-path or multicycle exceptions are expected.
-//   Interface Budget   : key and ciphertext inputs are captured at the boundary; plaintext and
-//                        decrypt_busy are fully registered outputs.
+//   Interface Budget   : key and cipher_block_i inputs are captured at the boundary; plain_block_q and
+//                        decrypt_busy_q are fully registered outputs.
+//   FSM Policy         : Preserve the explicit one-hot controller encoding; do not auto-recode it
+//                        during synthesis.
 //   Resource Expectation: This is the dominant area and timing block in the design, driven by
 //                         the inverse-round combinational datapath and round-key constants.
+//                         Current Yosys sanity baseline is 935 local cells plus 34 helper-memory
+//                         nodes / 69632 bits created from local function tables; those frontend
+//                         memory nodes are tool-model artifacts rather than required technology RAMs.
 //                         No RAM, ROM macro, or DSP primitive is instantiated.
+//   Resource Estimate   : ~521 state bits, 935 Yosys sanity cells, 0 RAMs, 0 DSPs,
+//                         and ~63.8% of the 1466-cell top-level baseline.
+//   Optimization Bias  : Preserve module input/output flops and optimize primarily for speed inside
+//                        the inverse-round datapath.
 //   Timing Margin      : Target >=10% post-route slack margin at the 50 MHz integration point.
 //   Signoff Follow-up  : Gate-level simulation, RTL-to-netlist equivalence, and timing-focused
 //                        regression remain required final signoff activities outside this repo.
-//                        Back-annotated timing simulation should focus on decrypt_busy,
-//                        plaintext_valid, and reset-release corner cases.
+//                        Back-annotated timing simulation should focus on decrypt_busy_q,
+//                        plain_fire_q, and reset-release corner cases.
 //
 // Constraint Template:
 //   create_clock -name core_clk -period 20.000 [get_ports core_clk]
-//   set_input_delay  -clock [get_clocks core_clk] 4.000 [get_ports {key_valid key_in[*] cipher_valid ciphertext[*]}]
-//   set_output_delay -clock [get_clocks core_clk] 4.000 [get_ports {plaintext_valid plaintext[*] decrypt_busy}]
+//   set_input_delay  -clock [get_clocks core_clk] 4.000
+//                    [get_ports {key_valid key_in[*] cipher_valid cipher_block_i[*]}]
+//   set_output_delay -clock [get_clocks core_clk] 4.000
+//                    [get_ports {plain_fire_q plain_block_q[*] decrypt_busy_q}]
 //   No false-path or multicycle exceptions are expected for this block.
 //
+// Specification Reference:
+//   AES inverse-round ordering follows FIPS-197 AES-128 decryption semantics.
+//   Project integration assumptions are captured in docs/digital_pipeline_aes.md.
+//
+// ASCII State Diagram:
+//   IDLE --[captured cipher_valid]-----------------------> RUN
+//   RUN  --[reg_round_index_f > 0 after inverse round]--> RUN
+//   RUN  --[final inverse round emitted]----------------> IDLE
+//   Any illegal state ----------------------------------> IDLE
+//
+// ASCII Timing Sketch:
+//   cycle          : T0  T1  T2  ... T10 T11
+//   reg_cipher_evt : 1   0   0   ... 0   0
+//   state action   : ARK R9  R8  ... R1  RF
+//   plain_fire_q   : 0   0   0   ... 0   1
+//   decrypt_busy_q : 0   1   1   ... 1   0
+//
 // Defines:
-//   RF_SECURE_ID_SIMONLY : Enables inline include-style SVA during simulation.
-//   RF_SECURE_ID_SVA_OFF : Disables the include-style SVA block entirely.
+//   RF_SECURE_ID_SIMONLY : When set, compile the raw SVA include at the
+//                          bottom of the module body.
+//                          When clear, no inline SVA is compiled.
+//   RF_SECURE_ID_SVA_OFF : When set, disable the include-style SVA block even
+//                          if RF_SECURE_ID_SIMONLY is set.
+//   Default build state  : Both defines are unset in synthesis and Yosys
+//                          sanity flow. RF_SECURE_ID_SIMONLY is simulation-only.
+//
+// Byte Ordering:
+//   AES state and round keys follow the published project convention:
+//   bytes are packed from [127:120] down to [7:0] and interpreted in AES
+//   column-major order.
+//
+// Algorithm Summary:
+//   Start with AddRoundKey using round key 10, iterate inverse rounds 9..1,
+//   then emit the final inverse round with round key 0.
+//
+// Assumptions:
+//   cipher_valid is a one-cycle start pulse.
+//   key_valid is only expected to request a new key while the engine is idle.
+//   The active integrated top uses the built-in default key schedule.
+//
+// CRITICAL:
+//   The inverse round order and byte packing convention must remain aligned
+//   with the Python cocotb reference model and the fixed-key schedule.
+//
+// TOOL_DEPENDENCY:
+//   Yosys 0.63 lowers helper arrays inside the AES functions into frontend
+//   memory nodes and register lists. That behavior is reviewed and treated as
+//   benign in this project.
 //
 // LIMITATION:
 //   Non-default runtime keys are latched into the interface register, but the
 //   round-key schedule still falls back to the built-in default schedule.
 //   No side-channel hardening is implemented in this educational RTL version.
+//
+// Interface Reference:
+//   AES decrypt interface semantics and project integration assumptions are
+//   documented in docs/digital_pipeline_aes.md.
 //=====================================================================================================
 module rf_secure_id_aes_decrypt (
     input  logic         core_clk,
@@ -97,10 +173,10 @@ module rf_secure_id_aes_decrypt (
     input  logic         key_valid,
     input  logic [127:0] key_in,
     input  logic         cipher_valid,
-    input  logic [127:0] ciphertext,
-    output logic         plaintext_valid,
-    output logic [127:0] plaintext,
-    output logic         decrypt_busy
+    input  logic [127:0] cipher_block_i,
+    output logic         plain_fire_q,
+    output logic [127:0] plain_block_q,
+    output logic         decrypt_busy_q
 );
 
     //========================================================================
@@ -111,29 +187,18 @@ module rf_secure_id_aes_decrypt (
         LP_AES_DECRYPT_FSM_RUN  = 2'b10
     } aes_decrypt_fsm_t;
 
-    logic reg_key_valid_in_f;
-    logic reg_key_valid_in_nxt;
-    logic [127:0] reg_key_in_in_f;
-    logic [127:0] reg_key_in_in_nxt;
-    logic reg_cipher_valid_in_f;
-    logic reg_cipher_valid_in_nxt;
-    logic [127:0] reg_ciphertext_in_f;
-    logic [127:0] reg_ciphertext_in_nxt;
+    logic         reg_key_load_f, reg_key_load_nxt;
+    logic [127:0] reg_key_word_f, reg_key_word_nxt;
+    logic         reg_cipher_evt_f, reg_cipher_evt_nxt;
+    logic [127:0] reg_cipher_bus_f, reg_cipher_bus_nxt;
 
-    aes_decrypt_fsm_t reg_aes_decrypt_fsm_state_f;
-    aes_decrypt_fsm_t reg_aes_decrypt_fsm_state_nxt;
-    logic [127:0] reg_state_f;
-    logic [127:0] reg_state_nxt;
-    logic [127:0] reg_key_f;
-    logic [127:0] reg_key_nxt;
-    logic [LP_ROUND_INDEX_WIDTH-1:0] reg_round_index_f;
-    logic [LP_ROUND_INDEX_WIDTH-1:0] reg_round_index_nxt;
-    logic reg_plaintext_valid_f;
-    logic reg_plaintext_valid_nxt;
-    logic [127:0] reg_plaintext_f;
-    logic [127:0] reg_plaintext_nxt;
-    logic reg_decrypt_busy_f;
-    logic reg_decrypt_busy_nxt;
+    aes_decrypt_fsm_t state_aes_decrypt_f, state_aes_decrypt_nxt;
+    logic [127:0] reg_state_f, reg_state_nxt;
+    logic [127:0] reg_key_f, reg_key_nxt;
+    logic [LP_ROUND_INDEX_WIDTH-1:0] reg_round_index_f, reg_round_index_nxt;
+    logic reg_plain_evt_f, reg_plain_evt_nxt;
+    logic [127:0] reg_plain_lane_f, reg_plain_lane_nxt;
+    logic reg_busy_hold_f, reg_busy_hold_nxt;
 
     //========================================================================
     // Function definitions
@@ -141,23 +206,23 @@ module rf_secure_id_aes_decrypt (
     // function_get_default_round_key
     //   Purpose         : Return one pre-expanded round key from the built-in AES schedule.
     //   Interoperability: Used by function_get_active_round_key and the round controller.
-    //   Inputs          : idx in the range [0, 10].
+    //   Inputs          : round_sel in the range [0, 10].
     //   Return          : 128-bit round key value for the requested round.
     //   Usage           : function_get_default_round_key(4'd10)
-    function automatic logic [127:0] function_get_default_round_key(input logic [3:0] idx);
+    function automatic logic [127:0] function_get_default_round_key(input logic [3:0] round_sel);
         begin
-            case (idx)
-                4'd0:    function_get_default_round_key = LP_DEFAULT_ROUND_KEY_0;
-                4'd1:    function_get_default_round_key = LP_DEFAULT_ROUND_KEY_1;
-                4'd2:    function_get_default_round_key = LP_DEFAULT_ROUND_KEY_2;
-                4'd3:    function_get_default_round_key = LP_DEFAULT_ROUND_KEY_3;
-                4'd4:    function_get_default_round_key = LP_DEFAULT_ROUND_KEY_4;
-                4'd5:    function_get_default_round_key = LP_DEFAULT_ROUND_KEY_5;
-                4'd6:    function_get_default_round_key = LP_DEFAULT_ROUND_KEY_6;
-                4'd7:    function_get_default_round_key = LP_DEFAULT_ROUND_KEY_7;
-                4'd8:    function_get_default_round_key = LP_DEFAULT_ROUND_KEY_8;
-                4'd9:    function_get_default_round_key = LP_DEFAULT_ROUND_KEY_9;
-                4'd10:   function_get_default_round_key = LP_DEFAULT_ROUND_KEY_10;
+            case (round_sel)
+                4'd0:    function_get_default_round_key = LP_DEFAULT_ROUNDKEY_00;
+                4'd1:    function_get_default_round_key = LP_DEFAULT_ROUNDKEY_01;
+                4'd2:    function_get_default_round_key = LP_DEFAULT_ROUNDKEY_02;
+                4'd3:    function_get_default_round_key = LP_DEFAULT_ROUNDKEY_03;
+                4'd4:    function_get_default_round_key = LP_DEFAULT_ROUNDKEY_04;
+                4'd5:    function_get_default_round_key = LP_DEFAULT_ROUNDKEY_05;
+                4'd6:    function_get_default_round_key = LP_DEFAULT_ROUNDKEY_06;
+                4'd7:    function_get_default_round_key = LP_DEFAULT_ROUNDKEY_07;
+                4'd8:    function_get_default_round_key = LP_DEFAULT_ROUNDKEY_08;
+                4'd9:    function_get_default_round_key = LP_DEFAULT_ROUNDKEY_09;
+                4'd10:   function_get_default_round_key = LP_DEFAULT_ROUNDKEY_10;
                 default: function_get_default_round_key = '0;
             endcase
         end
@@ -166,18 +231,18 @@ module rf_secure_id_aes_decrypt (
     // function_get_active_round_key
     //   Purpose         : Select the round-key schedule used by the iterative core.
     //   Interoperability: Called by the start path and each decrypt round.
-    //   Inputs          : key_value = latched key register, round_index = requested round.
+    //   Inputs          : key_value = latched key register, round_sel = requested round.
     //   Return          : 128-bit round key for the active schedule.
     //   Usage           : function_get_active_round_key(reg_key_f, reg_round_index_f)
     function automatic logic [127:0] function_get_active_round_key(
         input logic [127:0] key_value,
-        input logic [3:0] round_index
+        input logic [3:0] round_sel
     );
         begin
             if (key_value == LP_DEFAULT_KEY) begin
-                function_get_active_round_key = function_get_default_round_key(round_index);
+                function_get_active_round_key = function_get_default_round_key(round_sel);
             end else begin
-                function_get_active_round_key = function_get_default_round_key(round_index);
+                function_get_active_round_key = function_get_default_round_key(round_sel);
             end
         end
     endfunction
@@ -490,20 +555,20 @@ module rf_secure_id_aes_decrypt (
     // function_gf_mul8
     //   Purpose         : Multiply two bytes in AES GF(2^8) arithmetic.
     //   Interoperability: Used by function_inv_mix_columns.
-    //   Inputs          : a and b are 8-bit field elements.
+    //   Inputs          : lhs_byte and rhs_byte are 8-bit field elements.
     //   Return          : 8-bit product reduced by the AES irreducible polynomial.
     //   Usage           : function_gf_mul8(8'h0E, 8'h57)
     function automatic logic [7:0] function_gf_mul8(
-        input logic [7:0] a,
-        input logic [7:0] b
+        input logic [7:0] lhs_byte,
+        input logic [7:0] rhs_byte
     );
         logic [7:0] temp_multiplicand;
         logic [7:0] temp_multiplier;
         logic [7:0] temp_product;
         integer i;
         begin
-            temp_multiplicand = a;
-            temp_multiplier   = b;
+            temp_multiplicand = lhs_byte;
+            temp_multiplier   = rhs_byte;
             temp_product      = 8'h00;
 
             for (i = 0; i < 8; i = i + 1) begin
@@ -636,7 +701,7 @@ module rf_secure_id_aes_decrypt (
     //   Interoperability: Used at decrypt start and in each inverse round.
     //   Inputs          : state_in = AES state, round_key = selected round key.
     //   Return          : Keyed AES state.
-    //   Usage           : function_add_round_key(reg_ciphertext_in_f, function_get_active_round_key(...))
+    //   Usage           : function_add_round_key(reg_cipher_bus_f, function_get_active_round_key(...))
     function automatic logic [127:0] function_add_round_key(
         input logic [127:0] state_in,
         input logic [127:0] round_key
@@ -670,7 +735,7 @@ module rf_secure_id_aes_decrypt (
 
     // function_inv_final_round
     //   Purpose         : Perform the final AES inverse round without MixColumns.
-    //   Interoperability: Called on the last RUN-state cycle before plaintext_valid pulses.
+    //   Interoperability: Called on the last RUN-state cycle before plain_fire_q pulses.
     //   Inputs          : state_in = current AES state, round_key = round key zero.
     //   Return          : Final plaintext block.
     //   Usage           : function_inv_final_round(reg_state_f, function_get_active_round_key(...))
@@ -694,17 +759,17 @@ module rf_secure_id_aes_decrypt (
     localparam int LP_ROUND_INDEX_WIDTH = $clog2(LP_NUM_ROUNDS + 1);
 
     localparam logic [127:0] LP_DEFAULT_KEY          = 128'h000102030405060708090A0B0C0D0E0F;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_0  = 128'h000102030405060708090A0B0C0D0E0F;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_1  = 128'hD6AA74FDD2AF72FADAA678F1D6AB76FE;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_2  = 128'hB692CF0B643DBDF1BE9BC5006830B3FE;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_3  = 128'hB6FF744ED2C2C9BF6C590CBF0469BF41;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_4  = 128'h47F7F7BC95353E03F96C32BCFD058DFD;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_5  = 128'h3CAAA3E8A99F9DEB50F3AF57ADF622AA;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_6  = 128'h5E390F7DF7A69296A7553DC10AA31F6B;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_7  = 128'h14F9701AE35FE28C440ADF4D4EA9C026;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_8  = 128'h47438735A41C65B9E016BAF4AEBF7AD2;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_9  = 128'h549932D1F08557681093ED9CBE2C974E;
-    localparam logic [127:0] LP_DEFAULT_ROUND_KEY_10 = 128'h13111D7FE3944A17F307A78B4D2B30C5;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_00 = 128'h000102030405060708090A0B0C0D0E0F;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_01 = 128'hD6AA74FDD2AF72FADAA678F1D6AB76FE;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_02 = 128'hB692CF0B643DBDF1BE9BC5006830B3FE;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_03 = 128'hB6FF744ED2C2C9BF6C590CBF0469BF41;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_04 = 128'h47F7F7BC95353E03F96C32BCFD058DFD;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_05 = 128'h3CAAA3E8A99F9DEB50F3AF57ADF622AA;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_06 = 128'h5E390F7DF7A69296A7553DC10AA31F6B;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_07 = 128'h14F9701AE35FE28C440ADF4D4EA9C026;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_08 = 128'h47438735A41C65B9E016BAF4AEBF7AD2;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_09 = 128'h549932D1F08557681093ED9CBE2C974E;
+    localparam logic [127:0] LP_DEFAULT_ROUNDKEY_10 = 128'h13111D7FE3944A17F307A78B4D2B30C5;
 
 
     //========================================================================
@@ -713,42 +778,42 @@ module rf_secure_id_aes_decrypt (
     always_comb begin : aes_decrypt_next_state_logic
         // Capture synchronous key/ciphertext inputs and compute the next
         // iterative AES controller state, round counter, and registered outputs.
-        reg_key_valid_in_nxt         = key_valid;
-        reg_key_in_in_nxt            = key_in;
-        reg_cipher_valid_in_nxt      = cipher_valid;
-        reg_ciphertext_in_nxt        = ciphertext;
-        reg_aes_decrypt_fsm_state_nxt = reg_aes_decrypt_fsm_state_f;
+        reg_key_load_nxt             = key_valid;
+        reg_key_word_nxt             = key_in;
+        reg_cipher_evt_nxt           = cipher_valid;
+        reg_cipher_bus_nxt           = cipher_block_i;
+        state_aes_decrypt_nxt         = state_aes_decrypt_f;
         reg_state_nxt                 = reg_state_f;
         reg_key_nxt                   = reg_key_f;
         reg_round_index_nxt           = reg_round_index_f;
-        reg_plaintext_valid_nxt       = 1'b0;
-        reg_plaintext_nxt             = reg_plaintext_f;
-        reg_decrypt_busy_nxt          = reg_decrypt_busy_f;
+        reg_plain_evt_nxt             = 1'b0;
+        reg_plain_lane_nxt            = reg_plain_lane_f;
+        reg_busy_hold_nxt             = reg_busy_hold_f;
 
-        if (reg_key_valid_in_f && !reg_decrypt_busy_f) begin
-            reg_key_nxt = reg_key_in_in_f;
+        if (reg_key_load_f && !reg_busy_hold_f) begin
+            reg_key_nxt = reg_key_word_f;
         end
 
-        case (reg_aes_decrypt_fsm_state_f)
+        case (state_aes_decrypt_f)
             LP_AES_DECRYPT_FSM_IDLE: begin
                 // LP_AES_DECRYPT_FSM_IDLE -> LP_AES_DECRYPT_FSM_RUN [captured cipher_valid]
-                reg_decrypt_busy_nxt = 1'b0;
+                reg_busy_hold_nxt = 1'b0;
 
-                if (reg_cipher_valid_in_f) begin
+                if (reg_cipher_evt_f) begin
                     reg_state_nxt = function_add_round_key(
-                        reg_ciphertext_in_f,
+                        reg_cipher_bus_f,
                         function_get_active_round_key(reg_key_f, 4'd10)
                     );
                     reg_round_index_nxt           = LP_ROUND_INDEX_WIDTH'(LP_NUM_ROUNDS - 1);
-                    reg_decrypt_busy_nxt          = 1'b1;
-                    reg_aes_decrypt_fsm_state_nxt = LP_AES_DECRYPT_FSM_RUN;
+                    reg_busy_hold_nxt             = 1'b1;
+                    state_aes_decrypt_nxt         = LP_AES_DECRYPT_FSM_RUN;
                 end
             end
 
             LP_AES_DECRYPT_FSM_RUN: begin
                 // LP_AES_DECRYPT_FSM_RUN -> LP_AES_DECRYPT_FSM_RUN [remaining rounds > 0]
                 // LP_AES_DECRYPT_FSM_RUN -> LP_AES_DECRYPT_FSM_IDLE [final round completed]
-                reg_decrypt_busy_nxt = 1'b1;
+                reg_busy_hold_nxt = 1'b1;
 
                 if (reg_round_index_f > 0) begin
                     reg_state_nxt = function_inv_round(
@@ -757,39 +822,39 @@ module rf_secure_id_aes_decrypt (
                     );
                     reg_round_index_nxt = reg_round_index_f - 1'b1;
                 end else begin
-                    reg_plaintext_nxt = function_inv_final_round(
+                    reg_plain_lane_nxt = function_inv_final_round(
                         reg_state_f,
                         function_get_active_round_key(reg_key_f, 4'd0)
                     );
-                    reg_plaintext_valid_nxt       = 1'b1;
-                    reg_decrypt_busy_nxt          = 1'b0;
-                    reg_aes_decrypt_fsm_state_nxt = LP_AES_DECRYPT_FSM_IDLE;
+                    reg_plain_evt_nxt             = 1'b1;
+                    reg_busy_hold_nxt             = 1'b0;
+                    state_aes_decrypt_nxt         = LP_AES_DECRYPT_FSM_IDLE;
                 end
             end
 
             default: begin
                 // Illegal state recovery: force the decrypt controller back to IDLE.
-                reg_aes_decrypt_fsm_state_nxt = LP_AES_DECRYPT_FSM_IDLE;
+                state_aes_decrypt_nxt         = LP_AES_DECRYPT_FSM_IDLE;
                 reg_state_nxt                 = '0;
                 reg_round_index_nxt           = '0;
-                reg_plaintext_valid_nxt       = 1'b0;
-                reg_plaintext_nxt             = reg_plaintext_f;
-                reg_decrypt_busy_nxt          = 1'b0;
+                reg_plain_evt_nxt             = 1'b0;
+                reg_plain_lane_nxt            = reg_plain_lane_f;
+                reg_busy_hold_nxt             = 1'b0;
             end
         endcase
 
         if (!rst_n) begin
-            reg_key_valid_in_nxt         = 1'b0;
-            reg_key_in_in_nxt            = '0;
-            reg_cipher_valid_in_nxt      = 1'b0;
-            reg_ciphertext_in_nxt        = '0;
-            reg_aes_decrypt_fsm_state_nxt = LP_AES_DECRYPT_FSM_IDLE;
+            reg_key_load_nxt             = 1'b0;
+            reg_key_word_nxt             = '0;
+            reg_cipher_evt_nxt           = 1'b0;
+            reg_cipher_bus_nxt           = '0;
+            state_aes_decrypt_nxt         = LP_AES_DECRYPT_FSM_IDLE;
             reg_state_nxt                 = '0;
             reg_key_nxt                   = LP_DEFAULT_KEY;
             reg_round_index_nxt           = '0;
-            reg_plaintext_valid_nxt       = 1'b0;
-            reg_plaintext_nxt             = '0;
-            reg_decrypt_busy_nxt          = 1'b0;
+            reg_plain_evt_nxt             = 1'b0;
+            reg_plain_lane_nxt            = '0;
+            reg_busy_hold_nxt             = 1'b0;
         end
     end
 
@@ -797,25 +862,25 @@ module rf_secure_id_aes_decrypt (
     // Sequential register update
     //========================================================================
     always_ff @(posedge core_clk) begin : aes_decrypt_register_update
-        reg_key_valid_in_f         <= reg_key_valid_in_nxt;
-        reg_key_in_in_f            <= reg_key_in_in_nxt;
-        reg_cipher_valid_in_f      <= reg_cipher_valid_in_nxt;
-        reg_ciphertext_in_f        <= reg_ciphertext_in_nxt;
-        reg_aes_decrypt_fsm_state_f <= reg_aes_decrypt_fsm_state_nxt;
+        reg_key_load_f             <= reg_key_load_nxt;
+        reg_key_word_f             <= reg_key_word_nxt;
+        reg_cipher_evt_f           <= reg_cipher_evt_nxt;
+        reg_cipher_bus_f           <= reg_cipher_bus_nxt;
+        state_aes_decrypt_f          <= state_aes_decrypt_nxt;
         reg_state_f                 <= reg_state_nxt;
         reg_key_f                   <= reg_key_nxt;
         reg_round_index_f           <= reg_round_index_nxt;
-        reg_plaintext_valid_f       <= reg_plaintext_valid_nxt;
-        reg_plaintext_f             <= reg_plaintext_nxt;
-        reg_decrypt_busy_f          <= reg_decrypt_busy_nxt;
+        reg_plain_evt_f             <= reg_plain_evt_nxt;
+        reg_plain_lane_f            <= reg_plain_lane_nxt;
+        reg_busy_hold_f             <= reg_busy_hold_nxt;
     end
 
     //========================================================================
     // Registered outputs
     //========================================================================
-    assign plaintext_valid = reg_plaintext_valid_f;
-    assign plaintext       = reg_plaintext_f;
-    assign decrypt_busy    = reg_decrypt_busy_f;
+    assign plain_fire_q   = reg_plain_evt_f;
+    assign plain_block_q  = reg_plain_lane_f;
+    assign decrypt_busy_q = reg_busy_hold_f;
 
 `ifndef RF_SECURE_ID_SVA_OFF
 `ifdef RF_SECURE_ID_SIMONLY

@@ -1,8 +1,8 @@
-property p_rf_secure_id_digital_lookup_and_timeout_do_not_overlap;
-    @(posedge core_clk) disable iff (!rst_n_sync)
-        !(lookup_valid_int && timeout_valid_int);
+property p_lookup_timeout_nonoverlap;
+    @(posedge core_clk) disable iff (!rst_pipe_n)
+        !(evt_lookup_rsp && evt_timeout_rsp);
 endproperty
 
-a_rf_secure_id_digital_lookup_and_timeout_do_not_overlap:
-    assert property (p_rf_secure_id_digital_lookup_and_timeout_do_not_overlap)
-        else $error("rf_secure_id_digital saw lookup_valid and timeout_valid together");
+a_lookup_timeout_nonoverlap:
+    assert property (p_lookup_timeout_nonoverlap)
+        else $error("rf_secure_id_digital saw lookup and timeout pulses together");
